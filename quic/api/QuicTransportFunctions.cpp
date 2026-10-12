@@ -159,7 +159,7 @@ std::optional<uint64_t> quicTraceEncodeStart() {
  * A stream's write offset advances only once the packet is written, so a
  * frame below it resends bytes an earlier packet carried.
  */
-std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase> quicTraceBuilt(
+std::pair<quic_trace::Packet, quic_trace::PacketPhase> quicTraceBuilt(
     QuicConnectionStateBase& connection,
     const RegularQuicWritePacket& packet,
     PacketNum packetNum,
@@ -171,8 +171,8 @@ std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase> quicTraceBuilt(
   context.packet_space =
       quicTracePacketSpace(packet.header.getProtectionType());
   context.start_ns = encodeStartNs;
-  QuicTraceSendingPacket traced{quic_trace::Packet(context), {}};
-  traced.packet.phase_at(QUIC_TRACE_PACKET_PHASE_FRAME_ENCODE, encodeStartNs)
+  quic_trace::Packet traced(context);
+  traced.phase_at(QUIC_TRACE_PACKET_PHASE_FRAME_ENCODE, encodeStartNs)
       .finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
   for (const auto& frame : packet.frames) {
     const auto* streamFrame = frame.asWriteStreamFrame();
@@ -181,7 +181,7 @@ std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase> quicTraceBuilt(
     }
     const auto* stream =
         connection.streamManager->findStream(streamFrame->streamId);
-    traced.packet.stream_frame(
+    traced.stream_frame(
         streamFrame->streamId,
         streamFrame->offset,
         streamFrame->offset + streamFrame->len,
@@ -190,23 +190,24 @@ std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase> quicTraceBuilt(
                      streamFrame->offset < stream->currentWriteOffset)
                : std::nullopt);
   }
-  auto encrypt = traced.packet.phase(QUIC_TRACE_PACKET_PHASE_PACKET_ENCRYPT);
+  auto encrypt = traced.phase(QUIC_TRACE_PACKET_PHASE_PACKET_ENCRYPT);
   return {std::move(traced), std::move(encrypt)};
 }
 
 /** End encryption and start the packet's wait for the send that carries it. */
-std::optional<QuicTraceSendingPacket> quicTraceEncrypted(
-    std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>&
+quic_trace::PendingSend quicTraceEncrypted(
+    std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>&
         built,
     uint64_t encodedSize) {
+  quic_trace::PendingSend sending;
   if (!built) {
-    return std::nullopt;
+    return sending;
   }
   auto& [traced, encrypt] = *built;
   encrypt.finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
-  traced.packet.set_byte_len(encodedSize);
-  traced.sendQueue = traced.packet.phase(QUIC_TRACE_PACKET_PHASE_SEND_QUEUE);
-  return std::move(traced);
+  traced.set_byte_len(encodedSize);
+  sending.add(std::move(traced));
+  return sending;
 }
 #endif
 
@@ -550,7 +551,7 @@ continuousMemoryBuildScheduleEncrypt(
       packet->header.data() >= connection.bufAccessor->data() &&
       packet->header.tail() < connection.bufAccessor->tail());
 #if defined(MVFST_MOQ_TRACE)
-  std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>
+  std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>
       quicTrace;
   if (quicTraceEncodeStartNs) {
     quicTrace = quicTraceBuilt(
@@ -727,7 +728,7 @@ iobufChainBasedBuildScheduleEncrypt(
     return DataPathResult::makeBuildFailure();
   }
 #if defined(MVFST_MOQ_TRACE)
-  std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>
+  std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>
       quicTrace;
   if (quicTraceEncodeStartNs) {
     quicTrace = quicTraceBuilt(

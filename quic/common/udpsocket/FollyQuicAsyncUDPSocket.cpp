@@ -195,7 +195,7 @@ auto quicTraceSend(Send&& send, Stats&& stats) {
   const uint64_t sentNs = quic_trace::now_ns();
   quicTraceLastSendNs = sentNs;
   socket.finish_at(
-      quicTraceSocketOutcome(error),
+      quic_trace::socket_outcome(error),
       result < 0 ? quic_trace::SocketStats{} : stats(result),
       sentNs);
   errno = error;

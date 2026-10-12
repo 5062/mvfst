@@ -41,7 +41,7 @@ class IOBufQuicBatch {
   [[nodiscard]] quic::Expected<bool, QuicError> write(
       BufPtr&& buf,
       size_t encodedSize,
-      std::optional<QuicTraceSendingPacket>&& trace);
+      quic_trace::PendingSend&& trace);
 #endif
 
   [[nodiscard]] quic::Expected<bool, QuicError> flush();
@@ -82,7 +82,7 @@ class IOBufQuicBatch {
   // here when the batch is destroyed never reached a send and is abandoned.
   void quicTraceFinishPending(quic_trace_packet_outcome outcome);
 
-  std::vector<QuicTraceSendingPacket> quicTracePending_;
+  quic_trace::PendingSend quicTracePending_;
 #endif
 };
 

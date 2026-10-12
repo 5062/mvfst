@@ -17,32 +17,10 @@
 #include <quic_trace/trace.hpp>
 
 #include <sys/socket.h>
-#include <array>
-#include <cerrno>
 #include <cstdint>
 #include <optional>
-#include <vector>
 
 namespace quic {
-
-/**
- * Translate the errno of a completed socket system call, or 0 for success.
- *
- * The outcome is the system call's own result. mvfst treats ENOBUFS like
- * EAGAIN and retries neither, so both record a would-block.
- */
-inline quic_trace_socket_outcome quicTraceSocketOutcome(int error) {
-  if (error == 0) {
-    return QUIC_TRACE_SOCKET_OUTCOME_SUCCESS;
-  }
-  if (error == EAGAIN || error == EWOULDBLOCK || error == ENOBUFS) {
-    return QUIC_TRACE_SOCKET_OUTCOME_WOULD_BLOCK;
-  }
-  if (error == ECONNRESET) {
-    return QUIC_TRACE_SOCKET_OUTCOME_CONNECTION_RESET;
-  }
-  return QUIC_TRACE_SOCKET_OUTCOME_ERROR;
-}
 
 /**
  * The completion of the latest send system call made on this thread.
@@ -82,38 +60,14 @@ quic_trace_packet_space quicTracePacketSpace(ProtectionTypeT protectionType) {
 template <typename Address>
 quic_trace::PathEndpoint quicTracePathEndpoint(const Address& address) {
   const auto family = address.getFamily();
-  if (family == AF_INET) {
-    const auto ip = address.getIPAddress().asV4().toByteArray();
-    std::array<uint8_t, 4> bytes{};
-    for (size_t i = 0; i < bytes.size(); ++i) {
-      bytes[i] = ip[i];
-    }
-    return quic_trace::PathEndpoint::ipv4(bytes, address.getPort());
+  if (family != AF_INET && family != AF_INET6) {
+    return quic_trace::PathEndpoint::ipv6({}, address.getPort());
   }
-  std::array<uint8_t, 16> bytes{};
-  if (family == AF_INET6) {
-    const auto ip = address.getIPAddress().asV6().toByteArray();
-    for (size_t i = 0; i < bytes.size(); ++i) {
-      bytes[i] = ip[i];
-    }
-  }
-  return quic_trace::PathEndpoint::ipv6(bytes, address.getPort());
+  sockaddr_storage storage{};
+  address.getAddress(&storage);
+  return quic_trace::PathEndpoint::from_sockaddr(
+      reinterpret_cast<const sockaddr*>(&storage));
 }
-
-/**
- * A TX packet waiting in a send batch, from the end of packet_encrypt until
- * the send that carries it completes.
- */
-struct QuicTraceSendingPacket {
-  quic_trace::Packet packet;
-  quic_trace::PacketPhase sendQueue;
-
-  /** End the wait and the packet at the send's completion. */
-  void finishAt(quic_trace_packet_outcome outcome, uint64_t sentNs) {
-    sendQueue.finish_at(QUIC_TRACE_PACKET_OUTCOME_SUCCESS, sentNs);
-    packet.finish_at(outcome, sentNs);
-  }
-};
 
 /**
  * Boundaries of one packet's stages inside QuicReadCodec::parsePacket, on the

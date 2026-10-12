@@ -113,7 +113,7 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
   if (numMsgsRecvd < 0) {
 #if defined(MVFST_MOQ_TRACE)
     quicTraceSocket.finish_at(
-        quicTraceSocketOutcome(quicTraceErrno), {}, quicTraceReadNs);
+        quic_trace::socket_outcome(quicTraceErrno), {}, quicTraceReadNs);
     errno = quicTraceErrno;
 #endif
     if (errno == EAGAIN || errno == EWOULDBLOCK) {

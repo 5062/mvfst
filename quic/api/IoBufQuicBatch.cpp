@@ -29,13 +29,13 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::write(
     BufPtr&& buf,
     size_t encodedSize) {
 #if defined(MVFST_MOQ_TRACE)
-  return write(std::move(buf), encodedSize, std::nullopt);
+  return write(std::move(buf), encodedSize, quic_trace::PendingSend());
 }
 
 quic::Expected<bool, QuicError> IOBufQuicBatch::write(
     BufPtr&& buf,
     size_t encodedSize,
-    std::optional<QuicTraceSendingPacket>&& trace) {
+    quic_trace::PendingSend&& trace) {
 #endif
   result_.packetsSent++;
   result_.bytesSent += encodedSize;
@@ -52,9 +52,7 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::write(
 #if defined(MVFST_MOQ_TRACE)
   // Join the batch only after the flush of the previous one, so the packet
   // ends at the send that carries it.
-  if (trace) {
-    quicTracePending_.push_back(std::move(*trace));
-  }
+  quicTracePending_.append(std::move(trace));
 #endif
 
   // try to append the new buffers
@@ -210,10 +208,7 @@ void IOBufQuicBatch::quicTraceFinishPending(quic_trace_packet_outcome outcome) {
   // A writer that made no system call leaves no completion; end the packets
   // where the attempt returned.
   const uint64_t sentNs = quicTraceLastSendNs.value_or(quic_trace::now_ns());
-  for (auto& pending : quicTracePending_) {
-    pending.finishAt(outcome, sentNs);
-  }
-  quicTracePending_.clear();
+  quicTracePending_.finish_at(outcome, sentNs);
 }
 #endif
 } // namespace quic
