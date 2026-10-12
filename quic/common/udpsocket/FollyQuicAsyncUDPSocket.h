@@ -233,6 +233,36 @@ class FollyQuicAsyncUDPSocket : public QuicAsyncUDPSocketImpl {
   folly::AsyncUDPSocket& getFollySocket();
 
  private:
+#if defined(MVFST_MOQ_TRACE)
+  // The send overrides wrap these, each one send system call, in quic_trace
+  // udp_socket events.
+  ssize_t writeImpl(
+      const quic::SocketAddress& address,
+      const struct iovec* vec,
+      size_t iovec_len);
+  int writemImpl(
+      AddressRange addrs,
+      iovec* iov,
+      size_t* numIovecsInBuffer,
+      size_t count);
+  ssize_t writeGSOImpl(
+      const quic::SocketAddress& address,
+      const struct iovec* vec,
+      size_t iovec_len,
+      WriteOptions options);
+  int writemGSOImpl(
+      AddressRange addrs,
+      const BufPtr* bufs,
+      size_t count,
+      const WriteOptions* options);
+  int writemGSOImpl(
+      AddressRange addrs,
+      iovec* iov,
+      size_t* numIovecsInBuffer,
+      size_t count,
+      const WriteOptions* options);
+#endif
+
   class FollyReadCallbackWrapper : public folly::AsyncUDPSocket::ReadCallback {
    public:
     FollyReadCallbackWrapper(

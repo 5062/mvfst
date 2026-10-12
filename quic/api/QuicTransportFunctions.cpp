@@ -135,6 +135,81 @@ std::string largestAckToSendToString(
 
 using namespace quic;
 
+#if defined(MVFST_MOQ_TRACE)
+/**
+ * Read the clock where frame encoding begins, if packet events are enabled.
+ *
+ * The trace itself starts only once the scheduler built a packet, backdated
+ * to this instant, so a build that yields nothing records no lifecycle.
+ */
+std::optional<uint64_t> quicTraceEncodeStart() {
+  if (!quic_trace_quic_packet_start_enabled() &&
+      !quic_trace_quic_packet_end_enabled() &&
+      !quic_trace_quic_packet_phase_enabled() &&
+      !quic_trace_quic_stream_frame_enabled()) {
+    return std::nullopt;
+  }
+  return quic_trace::now_ns();
+}
+
+/**
+ * Start the trace of a packet the scheduler built, and record its STREAM
+ * frames. Returns the packet with its encryption phase open.
+ *
+ * A stream's write offset advances only once the packet is written, so a
+ * frame below it resends bytes an earlier packet carried.
+ */
+std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase> quicTraceBuilt(
+    QuicConnectionStateBase& connection,
+    const RegularQuicWritePacket& packet,
+    PacketNum packetNum,
+    uint64_t encodeStartNs) {
+  quic_trace::PacketContext context;
+  context.connection_id = connection.quicTraceConnectionId;
+  context.direction = QUIC_TRACE_DIRECTION_TX;
+  context.packet_number = packetNum;
+  context.packet_space =
+      quicTracePacketSpace(packet.header.getProtectionType());
+  context.start_ns = encodeStartNs;
+  QuicTraceSendingPacket traced{quic_trace::Packet(context), {}};
+  traced.packet.phase_at(QUIC_TRACE_PACKET_PHASE_FRAME_ENCODE, encodeStartNs)
+      .finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+  for (const auto& frame : packet.frames) {
+    const auto* streamFrame = frame.asWriteStreamFrame();
+    if (!streamFrame || streamFrame->len == 0) {
+      continue;
+    }
+    const auto* stream =
+        connection.streamManager->findStream(streamFrame->streamId);
+    traced.packet.stream_frame(
+        streamFrame->streamId,
+        streamFrame->offset,
+        streamFrame->offset + streamFrame->len,
+        QUIC_TRACE_PACKET_OUTCOME_SUCCESS,
+        stream ? std::optional<bool>(
+                     streamFrame->offset < stream->currentWriteOffset)
+               : std::nullopt);
+  }
+  auto encrypt = traced.packet.phase(QUIC_TRACE_PACKET_PHASE_PACKET_ENCRYPT);
+  return {std::move(traced), std::move(encrypt)};
+}
+
+/** End encryption and start the packet's wait for the send that carries it. */
+std::optional<QuicTraceSendingPacket> quicTraceEncrypted(
+    std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>&
+        built,
+    uint64_t encodedSize) {
+  if (!built) {
+    return std::nullopt;
+  }
+  auto& [traced, encrypt] = *built;
+  encrypt.finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+  traced.packet.set_byte_len(encodedSize);
+  traced.sendQueue = traced.packet.phase(QUIC_TRACE_PACKET_PHASE_SEND_QUEUE);
+  return std::move(traced);
+}
+#endif
+
 void notifyPacketProcessorsOnDestroy(
     void* context,
     const OutstandingPacketWrapper& pkt) {
@@ -389,6 +464,9 @@ continuousMemoryBuildScheduleEncrypt(
         "Insufficient ContinuousMemory buffer tailroom"));
   }
 
+#if defined(MVFST_MOQ_TRACE)
+  const auto quicTraceEncodeStartNs = quicTraceEncodeStart();
+#endif
   const auto rollbackSize = connection.bufAccessor->length();
   auto rollbackBuf = [&]() {
     connection.bufAccessor->trimEnd(
@@ -471,6 +549,14 @@ continuousMemoryBuildScheduleEncrypt(
   MVCHECK(
       packet->header.data() >= connection.bufAccessor->data() &&
       packet->header.tail() < connection.bufAccessor->tail());
+#if defined(MVFST_MOQ_TRACE)
+  std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>
+      quicTrace;
+  if (quicTraceEncodeStartNs) {
+    quicTrace = quicTraceBuilt(
+        connection, packet->packet, packetNum, *quicTraceEncodeStartNs);
+  }
+#endif
   // Trim off everything before the current packet, and the header length, so
   // buf's data starts from the body part of buf.
   connection.bufAccessor->trimStart(packetStart + headerLen);
@@ -503,6 +589,9 @@ continuousMemoryBuildScheduleEncrypt(
   MVCHECK(!packetBuf->isChained());
   auto encodedSize = packetBuf->length();
   auto encodedBodySize = encodedSize - headerLen;
+#if defined(MVFST_MOQ_TRACE)
+  auto quicTraceSending = quicTraceEncrypted(quicTrace, encodedSize);
+#endif
   encodedSize += sconePacketSize;
   if (sconePacketSize) {
     connection.scone->lastSconeSentTime = sendTime;
@@ -538,8 +627,15 @@ continuousMemoryBuildScheduleEncrypt(
               << encodedSize;
   }
   // TODO: I think we should add an API that doesn't need a buffer.
+#if defined(MVFST_MOQ_TRACE)
+  auto writeResult = ioBufBatch.write(
+      nullptr /* no need to pass buf */,
+      encodedSize,
+      std::move(quicTraceSending));
+#else
   auto writeResult =
       ioBufBatch.write(nullptr /* no need to pass buf */, encodedSize);
+#endif
   if (!writeResult.has_value()) {
     return quic::make_unexpected(writeResult.error());
   }
@@ -564,6 +660,9 @@ iobufChainBasedBuildScheduleEncrypt(
     const Aead& aead,
     const PacketNumberCipher& headerCipher,
     TimePoint sendTime) {
+#if defined(MVFST_MOQ_TRACE)
+  const auto quicTraceEncodeStartNs = quicTraceEncodeStart();
+#endif
   // SCONE: Pre-build SCONE packet and adjust max packet size to avoid overflow
   std::unique_ptr<Buf> preBuildSconePacket;
   uint64_t adjustedMaxPacketSize = connection.udpSendPacketLen;
@@ -627,6 +726,14 @@ iobufChainBasedBuildScheduleEncrypt(
     }
     return DataPathResult::makeBuildFailure();
   }
+#if defined(MVFST_MOQ_TRACE)
+  std::optional<std::pair<QuicTraceSendingPacket, quic_trace::PacketPhase>>
+      quicTrace;
+  if (quicTraceEncodeStartNs) {
+    quicTrace = quicTraceBuilt(
+        connection, packet->packet, packetNum, *quicTraceEncodeStartNs);
+  }
+#endif
   packet->header.coalesce();
   packet->body.coalesce();
   auto headerLen = packet->header.length();
@@ -671,6 +778,9 @@ iobufChainBasedBuildScheduleEncrypt(
   }
   auto encodedSize = packetBuf->computeChainDataLength();
   auto encodedBodySize = encodedSize - headerLen;
+#if defined(MVFST_MOQ_TRACE)
+  auto quicTraceSending = quicTraceEncrypted(quicTrace, encodedSize);
+#endif
 
   // SCONE: Prepend pre-built SCONE packet for co-alescing (size already
   // accounted for)
@@ -711,7 +821,12 @@ iobufChainBasedBuildScheduleEncrypt(
     MVVLOG(3) << "Quic sending pkt larger than limit, encodedSize="
               << encodedSize << " encodedBodySize=" << encodedBodySize;
   }
+#if defined(MVFST_MOQ_TRACE)
+  auto writeResult = ioBufBatch.write(
+      std::move(packetBuf), encodedSize, std::move(quicTraceSending));
+#else
   auto writeResult = ioBufBatch.write(std::move(packetBuf), encodedSize);
+#endif
   if (!writeResult.has_value()) {
     return quic::make_unexpected(writeResult.error());
   }
@@ -2422,6 +2537,58 @@ quic::Expected<WriteQuicDataResult, QuicError> writeProbingDataToSocket(
       << connection;
   return WriteQuicDataResult{0, probesWritten, bytesWritten};
 }
+
+#if defined(MVFST_MOQ_TRACE)
+void quicTraceUpdateSendBlocked(
+    QuicConnectionStateBase& conn,
+    bool pacingDelayed) {
+  const bool waiting = hasNonAckDataToWrite(conn) != WriteDataReason::NO_WRITE;
+  // The transmit limits apply in this order, and only the first that holds
+  // records an interval: amplification, then the congestion window, then
+  // pacing.
+  std::optional<quic_trace_send_blocked_reason> transmit;
+  if (waiting) {
+    if (pathValidationWritableBytes(conn, conn.currentPathId) == 0 ||
+        (conn.writableBytesLimit &&
+         maybeUnvalidatedClientWritableBytes(conn) == 0)) {
+      transmit = QUIC_TRACE_SEND_BLOCKED_REASON_AMPLIFICATION;
+    } else if (
+        conn.congestionController &&
+        conn.congestionController->getWritableBytes() == 0) {
+      transmit = QUIC_TRACE_SEND_BLOCKED_REASON_CONGESTION_WINDOW;
+    } else if (pacingDelayed) {
+      transmit = QUIC_TRACE_SEND_BLOCKED_REASON_PACING;
+    }
+  }
+  const auto update = [&](quic_trace::SendBlocked& interval,
+                          quic_trace_send_blocked_reason reason,
+                          bool blocked) {
+    if (!blocked) {
+      interval.finish();
+    } else if (!interval.active()) {
+      interval = quic_trace::SendBlocked(conn.quicTraceConnectionId, reason);
+    }
+  };
+  update(
+      conn.quicTraceAmplificationBlocked,
+      QUIC_TRACE_SEND_BLOCKED_REASON_AMPLIFICATION,
+      transmit == QUIC_TRACE_SEND_BLOCKED_REASON_AMPLIFICATION);
+  update(
+      conn.quicTraceCongestionWindowBlocked,
+      QUIC_TRACE_SEND_BLOCKED_REASON_CONGESTION_WINDOW,
+      transmit == QUIC_TRACE_SEND_BLOCKED_REASON_CONGESTION_WINDOW);
+  update(
+      conn.quicTracePacingBlocked,
+      QUIC_TRACE_SEND_BLOCKED_REASON_PACING,
+      transmit == QUIC_TRACE_SEND_BLOCKED_REASON_PACING);
+  // Stream bytes the connection's MAX_DATA keeps from being sent.
+  update(
+      conn.quicTraceConnectionFlowControlBlocked,
+      QUIC_TRACE_SEND_BLOCKED_REASON_CONNECTION_FLOW_CONTROL,
+      conn.flowControlState.sumCurStreamBufferLen > 0 &&
+          getSendConnFlowControlBytesWire(conn) == 0);
+}
+#endif
 
 WriteDataReason shouldWriteData(/*const*/ QuicConnectionStateBase& conn) {
   auto& numProbePackets = conn.pendingEvents.numProbePackets;

@@ -224,6 +224,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::parseLongHeaderPacket(
   MutableByteRange packetNumberByteRange(
       currentPacketData->writableData() + packetNumberOffset,
       kMaxPacketNumEncodingSize);
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::unprotectStartNs);
+#endif
   auto decryptResult = headerCipher->decryptLongHeader(
       ByteRange(sample.data(), sample.size()),
       initialByteRange,
@@ -251,6 +254,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::parseLongHeaderPacket(
   }
 
   BufPtr decrypted;
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::decryptStartNs);
+#endif
   auto decryptAttempt = cipher->tryDecrypt(
       std::move(encryptedData), headerData.get(), packetNum.first);
   if (!decryptAttempt) {
@@ -267,6 +273,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::parseLongHeaderPacket(
     decrypted = BufHelpers::create(0);
   }
 
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::decodeStartNs);
+#endif
   auto packetRes =
       decodeRegularPacket(std::move(longHeader), params_, std::move(decrypted));
 
@@ -301,6 +310,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::tryParseShortHeaderPacket(
       data->writableData() + packetNumberOffset, kMaxPacketNumEncodingSize);
   ByteRange sampleByteRange(data->writableData() + sampleOffset, sample.size());
 
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::unprotectStartNs);
+#endif
   auto decryptResult = oneRttHeaderCipher_->decryptShortHeader(
       sampleByteRange, initialByteRange, packetNumberByteRange);
   if (decryptResult.hasError()) {
@@ -370,6 +382,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::tryParseShortHeaderPacket(
   data->trimStart(aadLen);
 
   BufPtr decrypted;
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::decryptStartNs);
+#endif
   auto decryptAttempt = oneRttReadCipherToUse->tryDecrypt(
       std::move(data), &headerData, packetNum.first);
   if (!decryptAttempt) {
@@ -408,6 +423,9 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::tryParseShortHeaderPacket(
   // around avoids the timing signals mentioned in the spec, but we could also
   // drop it after 3 * PTO.
 
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceStamp(&QuicTraceParseStamps::decodeStartNs);
+#endif
   auto packetRes = decodeRegularPacket(
       std::move(*shortHeader), params_, std::move(decrypted));
 

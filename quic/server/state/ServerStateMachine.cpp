@@ -36,6 +36,139 @@ using namespace std::chrono_literals;
 namespace {
 constexpr size_t kConnIdEncodingRetryLimit = 32;
 
+#if defined(MVFST_MOQ_TRACE)
+/**
+ * The trace of one QUIC packet the server reads, from the completion of the
+ * receive system call that returned its datagram until its processing ends.
+ *
+ * A datagram from no traced read gets no trace. Coalesced packets share their
+ * datagram's read, so each records its wait from that read as read_queue. The
+ * outcome stays dropped unless processing completes or sets another, so a
+ * packet that leaves the loop early records why.
+ */
+class QuicTraceRxPacket {
+ public:
+  QuicTraceRxPacket(
+      const QuicServerConnectionState& conn,
+      std::optional<uint64_t> readNs) {
+    if (!readNs) {
+      return;
+    }
+    if (!quic_trace_quic_packet_start_enabled() &&
+        !quic_trace_quic_packet_end_enabled() &&
+        !quic_trace_quic_packet_phase_enabled() &&
+        !quic_trace_quic_stream_frame_enabled()) {
+      return;
+    }
+    parseStartNs_ = quic_trace::now_ns();
+    quic_trace::PacketContext context;
+    context.connection_id = conn.quicTraceConnectionId;
+    context.direction = QUIC_TRACE_DIRECTION_RX;
+    context.start_ns = *readNs;
+    packet_ = quic_trace::Packet(context);
+    packet_.phase_at(QUIC_TRACE_PACKET_PHASE_READ_QUEUE, *readNs)
+        .finish_at(QUIC_TRACE_PACKET_OUTCOME_SUCCESS, *parseStartNs_);
+  }
+
+  QuicTraceRxPacket(const QuicTraceRxPacket&) = delete;
+  QuicTraceRxPacket& operator=(const QuicTraceRxPacket&) = delete;
+
+  ~QuicTraceRxPacket() {
+    frameProcess_.finish(outcome_);
+    packet_.finish(outcome_);
+  }
+
+  /** Where the codec stamps this packet's parse stages, if it is traced. */
+  QuicTraceParseStamps* stamps() {
+    return parseStartNs_ ? &stamps_ : nullptr;
+  }
+
+  /**
+   * Record the parse stages once the codec returned. A stage that a later one
+   * followed succeeded, and the last one reached ends now with `outcome`. A
+   * regular packet's frame decoding continues into frame processing.
+   */
+  void parsed(
+      quic_trace_packet_outcome outcome,
+      size_t packetSize,
+      const RegularQuicPacket* regular) {
+    if (!parseStartNs_) {
+      return;
+    }
+    const uint64_t endNs = quic_trace::now_ns();
+    packet_.set_byte_len(packetSize);
+    const std::
+        array<std::pair<quic_trace_packet_phase, std::optional<uint64_t>>, 3>
+            stages{{
+                {QUIC_TRACE_PACKET_PHASE_HEADER_PARSE, parseStartNs_},
+                {QUIC_TRACE_PACKET_PHASE_HEADER_UNPROTECT,
+                 stamps_.unprotectStartNs},
+                {QUIC_TRACE_PACKET_PHASE_PAYLOAD_DECRYPT,
+                 stamps_.decryptStartNs},
+            }};
+    for (size_t i = 0; i < stages.size(); ++i) {
+      const auto& [phase, startNs] = stages[i];
+      if (!startNs) {
+        continue;
+      }
+      std::optional<uint64_t> nextNs;
+      for (size_t j = i + 1; j < stages.size() && !nextNs; ++j) {
+        nextNs = stages[j].second;
+      }
+      if (!nextNs) {
+        nextNs = stamps_.decodeStartNs;
+      }
+      packet_.phase_at(phase, *startNs)
+          .finish_at(
+              nextNs ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS : outcome,
+              nextNs.value_or(endNs));
+    }
+    if (regular) {
+      packet_.set_number(regular->header.getPacketSequenceNum());
+      packet_.set_space(
+          quicTracePacketSpace(regular->header.getProtectionType()));
+      frameProcess_ = packet_.phase_at(
+          QUIC_TRACE_PACKET_PHASE_FRAME_PROCESS,
+          stamps_.decodeStartNs.value_or(endNs));
+    }
+    outcome_ = outcome;
+  }
+
+  /** Set how the packet ends, unless a later step changes it. */
+  void setOutcome(quic_trace_packet_outcome outcome) {
+    outcome_ = outcome;
+  }
+
+  /**
+   * Record a STREAM frame once the stream handled it. The stream buffered the
+   * bytes, duplicates included, only when it was still open for receiving,
+   * and no application code runs before this point.
+   */
+  void streamFrame(
+      StreamId streamId,
+      uint64_t offsetStart,
+      uint64_t offsetEnd,
+      bool accepted) const {
+    if (offsetEnd <= offsetStart) {
+      return;
+    }
+    packet_.stream_frame(
+        streamId,
+        offsetStart,
+        offsetEnd,
+        accepted ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS
+                 : QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+  }
+
+ private:
+  quic_trace::Packet packet_;
+  quic_trace::PacketPhase frameProcess_;
+  std::optional<uint64_t> parseStartNs_;
+  QuicTraceParseStamps stamps_;
+  quic_trace_packet_outcome outcome_{QUIC_TRACE_PACKET_OUTCOME_DROPPED};
+};
+#endif
+
 bool maybeNATRebinding(
     const quic::SocketAddress& newPeerAddress,
     const quic::SocketAddress& oldPeerAddress) {
@@ -1214,6 +1347,15 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
     conn.initialHeaderCipher =
         std::move(serverInitialHeaderCipherResult.value());
     conn.peerAddress = conn.originalPeerAddress;
+#if defined(MVFST_MOQ_TRACE)
+    // The first path a new connection sends on. The local address is the one
+    // the read reported, which can be the wildcard a listening socket is
+    // bound to.
+    quic_trace::connection_path(
+        conn.quicTraceConnectionId,
+        quicTracePathEndpoint(readData.localAddress),
+        quicTracePathEndpoint(conn.peerAddress));
+#endif
     auto pathIdResult = conn.pathManager->addValidatedPath(
         readData.localAddress, conn.peerAddress);
     if (pathIdResult.hasError()) {
@@ -1237,8 +1379,46 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
        !udpData.empty() && processedPackets < kMaxNumCoalescedPackets;
        processedPackets++) {
     size_t dataSize = udpData.chainLength();
+#if defined(MVFST_MOQ_TRACE)
+    QuicTraceRxPacket quicTrace(
+        conn, readData.udpPacket.timings.quicTraceReadNs);
+    conn.readCodec->setQuicTraceStamps(quicTrace.stamps());
+#endif
     auto parsedPacket = conn.readCodec->parsePacket(udpData, conn.ackStates);
     size_t packetSize = dataSize - udpData.chainLength();
+#if defined(MVFST_MOQ_TRACE)
+    conn.readCodec->setQuicTraceStamps(nullptr);
+    switch (parsedPacket.type()) {
+      case CodecResult::Type::REGULAR_PACKET:
+      case CodecResult::Type::SCONE_PACKET:
+        quicTrace.parsed(
+            QUIC_TRACE_PACKET_OUTCOME_SUCCESS,
+            packetSize,
+            parsedPacket.regularPacket());
+        // Processing has not finished, so the packet is not yet a success.
+        quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+        break;
+      case CodecResult::Type::NOTHING:
+        quicTrace.parsed(
+            parsedPacket.nothing()->reason ==
+                    PacketDropReason(PacketDropReason::DECRYPTION_ERROR)
+                ? QUIC_TRACE_PACKET_OUTCOME_AUTHENTICATION_FAILED
+                : QUIC_TRACE_PACKET_OUTCOME_DROPPED,
+            packetSize,
+            nullptr);
+        break;
+      case CodecResult::Type::CODEC_ERROR:
+        quicTrace.parsed(
+            QUIC_TRACE_PACKET_OUTCOME_MALFORMED, packetSize, nullptr);
+        break;
+      default:
+        // A packet waiting for its keys is replayed with its read time and
+        // traced again then. Retry and stateless reset carry no data.
+        quicTrace.parsed(
+            QUIC_TRACE_PACKET_OUTCOME_DROPPED, packetSize, nullptr);
+        break;
+    }
+#endif
 
     switch (parsedPacket.type()) {
       case CodecResult::Type::CIPHER_UNAVAILABLE: {
@@ -1305,6 +1485,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
                 .version = static_cast<QuicVersion>(sp->version)};
           }
         }
+#if defined(MVFST_MOQ_TRACE)
+        quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+#endif
         continue; // SCONE packet carries no frames - continue to next packet
       }
       case CodecResult::Type::REGULAR_PACKET:
@@ -1333,6 +1516,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
           conn.statsCallback,
           onPacketDropped,
           PacketDropReason::PROTOCOL_VIOLATION);
+#if defined(MVFST_MOQ_TRACE)
+      quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_MALFORMED);
+#endif
       return quic::make_unexpected(QuicError(
           TransportErrorCode::PROTOCOL_VIOLATION, "Packet has no frames"));
     }
@@ -1697,6 +1883,14 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
             return quic::make_unexpected(streamResult.error());
           }
           auto& stream = streamResult.value();
+#if defined(MVFST_MOQ_TRACE)
+          const StreamId quicTraceStreamId = frame.streamId;
+          const uint64_t quicTraceOffset = frame.offset;
+          const uint64_t quicTraceLength =
+              frame.data ? frame.data->computeChainDataLength() : 0;
+          const bool quicTraceAccepted =
+              stream && stream->recvState == StreamRecvState::Open;
+#endif
 
           if (stream) {
             auto result =
@@ -1705,6 +1899,13 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
               return quic::make_unexpected(result.error());
             }
           }
+#if defined(MVFST_MOQ_TRACE)
+          quicTrace.streamFrame(
+              quicTraceStreamId,
+              quicTraceOffset,
+              quicTraceOffset + quicTraceLength,
+              quicTraceAccepted);
+#endif
           break;
         }
         case QuicFrame::Type::MaxDataFrame: {
@@ -1964,6 +2165,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
     }
     processedPacketsTotal++;
     subsequentPacketProcessedSuccessfully = true;
+#if defined(MVFST_MOQ_TRACE)
+    quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+#endif
   }
 
   // Apply SCONE rate signal only if subsequent packet was processed

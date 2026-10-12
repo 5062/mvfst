@@ -132,6 +132,19 @@ if(BUILD_TESTS)
   include(QuicTest)
 endif()
 
+# Emit quic_trace:* transport events through the moq-trace toolkit's LTTng
+# provider, installed on CMAKE_PREFIX_PATH. The definition changes struct
+# layouts in mvfst headers, so a project that builds other code against those
+# headers, such as proxygen, must define MVFST_MOQ_TRACE for all of it too.
+option(MVFST_MOQ_TRACE "Emit quic_trace transport events over LTTng" OFF)
+if(MVFST_MOQ_TRACE)
+  if(NOT TARGET quic_trace::cpp)
+    find_package(quic_trace CONFIG REQUIRED)
+  endif()
+  add_compile_definitions(MVFST_MOQ_TRACE)
+  link_libraries(quic_trace::cpp)
+endif()
+
 add_subdirectory(quic)
 
 # Create the monolithic mvfst library for backward compatibility

@@ -9,6 +9,7 @@
 #include <quic/QuicException.h>
 #include <quic/api/QuicBatchWriter.h>
 #include <quic/client/state/ClientStateMachine.h>
+#include <quic/common/QuicTrace.h>
 #include <quic/state/QuicTransportStatsCallback.h>
 
 namespace quic {
@@ -33,6 +34,15 @@ class IOBufQuicBatch {
   [[nodiscard]] quic::Expected<bool, QuicError> write(
       BufPtr&& buf,
       size_t encodedSize);
+
+#if defined(MVFST_MOQ_TRACE)
+  // Write a traced packet. Its trace waits in the batch from the end of its
+  // encryption until the send that carries it completes, and ends there.
+  [[nodiscard]] quic::Expected<bool, QuicError> write(
+      BufPtr&& buf,
+      size_t encodedSize,
+      std::optional<QuicTraceSendingPacket>&& trace);
+#endif
 
   [[nodiscard]] quic::Expected<bool, QuicError> flush();
 
@@ -66,6 +76,14 @@ class IOBufQuicBatch {
   QuicClientConnectionState::HappyEyeballsState* happyEyeballsState_;
   BufQuicBatchResult result_;
   int lastRetryableErrno_{};
+
+#if defined(MVFST_MOQ_TRACE)
+  // End every packet in the batch at the send that carried it. A packet still
+  // here when the batch is destroyed never reached a send and is abandoned.
+  void quicTraceFinishPending(quic_trace_packet_outcome outcome);
+
+  std::vector<QuicTraceSendingPacket> quicTracePending_;
+#endif
 };
 
 } // namespace quic

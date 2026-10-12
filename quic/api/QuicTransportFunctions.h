@@ -252,6 +252,17 @@ uint64_t pathValidationWritableBytes(
  */
 uint64_t congestionControlWritableBytes(QuicConnectionStateBase& conn);
 
+#if defined(MVFST_MOQ_TRACE)
+/**
+ * Re-evaluate the intervals in which the connection cannot send, after a
+ * write attempt. Data must be waiting for any reason to hold. `pacingDelayed`
+ * says the pacer is holding the next write.
+ */
+void quicTraceUpdateSendBlocked(
+    QuicConnectionStateBase& conn,
+    bool pacingDelayed);
+#endif
+
 uint64_t unlimitedWritableBytes(QuicConnectionStateBase&);
 
 void writeCloseCommon(

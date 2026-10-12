@@ -65,6 +65,14 @@ struct ReceivedUdpPacket {
     // Socket timestamps, when available.
     Optional<SocketTimestampExt> maybeSoftwareTs;
 
+#if defined(MVFST_MOQ_TRACE)
+    // When the receive system call that returned this datagram completed, on
+    // the quic_trace clock. Every packet the datagram holds starts its trace
+    // here, including one replayed after its keys arrive. A datagram from no
+    // traced read, such as one a test builds, has none and is not traced.
+    std::optional<uint64_t> quicTraceReadNs;
+#endif
+
     Timings() = default;
     Timings(const Timings&) = default;
     Timings(Timings&&) noexcept = default;

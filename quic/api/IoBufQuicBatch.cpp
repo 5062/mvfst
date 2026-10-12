@@ -28,6 +28,15 @@ IOBufQuicBatch::IOBufQuicBatch(
 quic::Expected<bool, QuicError> IOBufQuicBatch::write(
     BufPtr&& buf,
     size_t encodedSize) {
+#if defined(MVFST_MOQ_TRACE)
+  return write(std::move(buf), encodedSize, std::nullopt);
+}
+
+quic::Expected<bool, QuicError> IOBufQuicBatch::write(
+    BufPtr&& buf,
+    size_t encodedSize,
+    std::optional<QuicTraceSendingPacket>&& trace) {
+#endif
   result_.packetsSent++;
   result_.bytesSent += encodedSize;
 
@@ -39,6 +48,14 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::write(
       return result;
     }
   }
+
+#if defined(MVFST_MOQ_TRACE)
+  // Join the batch only after the flush of the previous one, so the packet
+  // ends at the send that carries it.
+  if (trace) {
+    quicTracePending_.push_back(std::move(*trace));
+  }
+#endif
 
   // try to append the new buffers
   if (batchWriter_->append(std::move(buf), encodedSize, peerAddress_, &sock_)) {
@@ -72,12 +89,25 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
   bool written = false;
   Optional<int> firstSocketErrno;
   if (!happyEyeballsState_ || happyEyeballsState_->shouldWriteToFirstSocket) {
+#if defined(MVFST_MOQ_TRACE)
+    quicTraceLastSendNs.reset();
+#endif
     auto consumed = batchWriter_->write(sock_, peerAddress_);
     if (consumed < 0) {
       firstSocketErrno = errno;
       lastRetryableErrno_ = errno;
     }
     written = (consumed >= 0);
+#if defined(MVFST_MOQ_TRACE)
+    // mvfst retries no failed send, would-block included, and recovers the
+    // batch as lost, so a failed send drops every packet it held.
+    quicTraceFinishPending(
+        written ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS
+                : QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+    if (firstSocketErrno) {
+      errno = *firstSocketErrno;
+    }
+#endif
     if (happyEyeballsState_) {
       happyEyeballsState_->shouldWriteToFirstSocket =
           (consumed >= 0 || isRetriableError(errno));
@@ -171,4 +201,19 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
 
   return true; // success, not done yet
 }
+
+#if defined(MVFST_MOQ_TRACE)
+void IOBufQuicBatch::quicTraceFinishPending(quic_trace_packet_outcome outcome) {
+  if (quicTracePending_.empty()) {
+    return;
+  }
+  // A writer that made no system call leaves no completion; end the packets
+  // where the attempt returned.
+  const uint64_t sentNs = quicTraceLastSendNs.value_or(quic_trace::now_ns());
+  for (auto& pending : quicTracePending_) {
+    pending.finishAt(outcome, sentNs);
+  }
+  quicTracePending_.clear();
+}
+#endif
 } // namespace quic

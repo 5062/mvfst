@@ -9,6 +9,7 @@
 #include <quic/QuicException.h>
 #include <quic/common/Expected.h>
 #include <quic/common/MvfstLogging.h> // For QuicError, QuicErrorCode, TransportErrorCode
+#include <quic/common/QuicTrace.h>
 #include <quic/common/StringUtils.h>
 #include <quic/common/address/QuicSocketAddressBridge.h>
 #include <quic/common/udpsocket/FollyQuicAsyncUDPSocket.h>
@@ -164,10 +165,64 @@ quic::Expected<void, QuicError> FollyQuicAsyncUDPSocket::setErrMessageCallback(
   }
 }
 
+#if defined(MVFST_MOQ_TRACE)
+namespace {
+
+uint64_t quicTraceIovecBytes(const struct iovec* vec, size_t len) {
+  uint64_t bytes = 0;
+  for (size_t i = 0; i < len; ++i) {
+    bytes += vec[i].iov_len;
+  }
+  return bytes;
+}
+
+uint64_t quicTraceSegments(uint64_t bytes, int gso) {
+  return gso > 0 ? (bytes + gso - 1) / gso : 1;
+}
+
+/**
+ * Run one send system call inside a udp_socket event.
+ *
+ * `stats` turns the call's result into the batch it accepted. The clock is
+ * read as soon as the call returns, and that instant is left in
+ * quicTraceLastSendNs for the batch whose packets the call carried.
+ */
+template <typename Send, typename Stats>
+auto quicTraceSend(Send&& send, Stats&& stats) {
+  quic_trace::Socket socket(QUIC_TRACE_DIRECTION_TX);
+  const auto result = send();
+  const int error = result < 0 ? errno : 0;
+  const uint64_t sentNs = quic_trace::now_ns();
+  quicTraceLastSendNs = sentNs;
+  socket.finish_at(
+      quicTraceSocketOutcome(error),
+      result < 0 ? quic_trace::SocketStats{} : stats(result),
+      sentNs);
+  errno = error;
+  return result;
+}
+
+} // namespace
+#endif
+
 ssize_t FollyQuicAsyncUDPSocket::write(
     const quic::SocketAddress& address,
     const struct iovec* vec,
     size_t iovec_len) {
+#if defined(MVFST_MOQ_TRACE)
+  return quicTraceSend(
+      [&] { return writeImpl(address, vec, iovec_len); },
+      [](ssize_t sent) {
+        return quic_trace::SocketStats{
+            .buffers = 1, .datagrams = 1, .bytes = uint64_t(sent)};
+      });
+}
+
+ssize_t FollyQuicAsyncUDPSocket::writeImpl(
+    const quic::SocketAddress& address,
+    const struct iovec* vec,
+    size_t iovec_len) {
+#endif
   try {
     folly::AsyncUDPSocket::WriteOptions writeOptions(
         0 /*gsoVal*/, false /* zerocopyVal*/);
@@ -190,6 +245,28 @@ int FollyQuicAsyncUDPSocket::writem(
     iovec* iov,
     size_t* numIovecsInBuffer,
     size_t count) {
+#if defined(MVFST_MOQ_TRACE)
+  return quicTraceSend(
+      [&] { return writemImpl(addrs, iov, numIovecsInBuffer, count); },
+      [&](int sent) {
+        // A partial sendmmsg accepted only its first `sent` messages.
+        quic_trace::SocketStats stats{
+            .buffers = uint64_t(sent), .datagrams = uint64_t(sent)};
+        const iovec* message = iov;
+        for (int i = 0; i < sent; ++i) {
+          stats.bytes += quicTraceIovecBytes(message, numIovecsInBuffer[i]);
+          message += numIovecsInBuffer[i];
+        }
+        return stats;
+      });
+}
+
+int FollyQuicAsyncUDPSocket::writemImpl(
+    AddressRange addrs,
+    iovec* iov,
+    size_t* numIovecsInBuffer,
+    size_t count) {
+#endif
   try {
     std::vector<folly::SocketAddress> buf;
     auto range = toFollyAddrRange(addrs, buf);
@@ -206,6 +283,24 @@ ssize_t FollyQuicAsyncUDPSocket::writeGSO(
     const struct iovec* vec,
     size_t iovec_len,
     WriteOptions options) {
+#if defined(MVFST_MOQ_TRACE)
+  return quicTraceSend(
+      [&] { return writeGSOImpl(address, vec, iovec_len, options); },
+      [&](ssize_t sent) {
+        // One buffer the kernel splits into GSO segments, one per datagram.
+        return quic_trace::SocketStats{
+            .buffers = 1,
+            .datagrams = quicTraceSegments(uint64_t(sent), options.gso),
+            .bytes = uint64_t(sent)};
+      });
+}
+
+ssize_t FollyQuicAsyncUDPSocket::writeGSOImpl(
+    const quic::SocketAddress& address,
+    const struct iovec* vec,
+    size_t iovec_len,
+    WriteOptions options) {
+#endif
   try {
     folly::AsyncUDPSocket::WriteOptions follyOptions(
         options.gso, options.zerocopy);
@@ -229,6 +324,27 @@ int FollyQuicAsyncUDPSocket::writemGSO(
     const BufPtr* bufs,
     size_t count,
     const WriteOptions* options) {
+#if defined(MVFST_MOQ_TRACE)
+  return quicTraceSend(
+      [&] { return writemGSOImpl(addrs, bufs, count, options); },
+      [&](int sent) {
+        quic_trace::SocketStats stats{.buffers = uint64_t(sent)};
+        for (int i = 0; i < sent; ++i) {
+          const uint64_t bytes =
+              bufs[i] ? bufs[i]->computeChainDataLength() : 0;
+          stats.datagrams += quicTraceSegments(bytes, options[i].gso);
+          stats.bytes += bytes;
+        }
+        return stats;
+      });
+}
+
+int FollyQuicAsyncUDPSocket::writemGSOImpl(
+    AddressRange addrs,
+    const BufPtr* bufs,
+    size_t count,
+    const WriteOptions* options) {
+#endif
   try {
     std::vector<folly::SocketAddress> buf;
     auto range = toFollyAddrRange(addrs, buf);
@@ -253,6 +369,32 @@ int FollyQuicAsyncUDPSocket::writemGSO(
     size_t* numIovecsInBuffer,
     size_t count,
     const WriteOptions* options) {
+#if defined(MVFST_MOQ_TRACE)
+  return quicTraceSend(
+      [&] {
+        return writemGSOImpl(addrs, iov, numIovecsInBuffer, count, options);
+      },
+      [&](int sent) {
+        quic_trace::SocketStats stats{.buffers = uint64_t(sent)};
+        const iovec* message = iov;
+        for (int i = 0; i < sent; ++i) {
+          const uint64_t bytes =
+              quicTraceIovecBytes(message, numIovecsInBuffer[i]);
+          message += numIovecsInBuffer[i];
+          stats.datagrams += quicTraceSegments(bytes, options[i].gso);
+          stats.bytes += bytes;
+        }
+        return stats;
+      });
+}
+
+int FollyQuicAsyncUDPSocket::writemGSOImpl(
+    AddressRange addrs,
+    iovec* iov,
+    size_t* numIovecsInBuffer,
+    size_t count,
+    const WriteOptions* options) {
+#endif
   try {
     std::vector<folly::SocketAddress> buf;
     auto range = toFollyAddrRange(addrs, buf);

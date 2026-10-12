@@ -8,6 +8,7 @@
 #pragma once
 
 #include <quic/common/MvfstLogging.h>
+#include <quic/common/QuicTrace.h>
 #include <quic/mvfst-config.h>
 
 #include <quic/QuicConstants.h>
@@ -343,6 +344,12 @@ inline folly::StringPiece streamStateToString(StreamRecvState state) {
 
 struct QuicStreamState : public QuicStreamLike {
   ~QuicStreamState() override = default;
+
+#if defined(MVFST_MOQ_TRACE)
+  // The interval in which this stream's peer flow control blocks its pending
+  // writes. It ends when the window opens or the stream goes away.
+  quic_trace::SendBlocked quicTraceFlowControlBlocked;
+#endif
 
   QuicStreamState(StreamId id, QuicConnectionStateBase& conn);
 

@@ -42,7 +42,9 @@
 #include <folly/io/async/DelayedDestruction.h>
 #include <quic/common/Optional.h>
 
+#include <quic/common/QuicTrace.h>
 #include <chrono>
+
 #include <list>
 #include <numeric>
 #include <queue>
@@ -332,6 +334,21 @@ struct QuicConnectionStateBase : public folly::DelayedDestruction {
   ~QuicConnectionStateBase() override = default;
 
   explicit QuicConnectionStateBase(QuicNodeType type) : nodeType(type) {}
+
+#if defined(MVFST_MOQ_TRACE)
+  // Process-wide identity of this connection on quic_trace events. Wire
+  // connection IDs rotate and an address can be reused, so neither can join a
+  // connection's packets, sockets, and MoQ objects.
+  const uint64_t quicTraceConnectionId{quic_trace::next_connection_id()};
+
+  // Intervals in which the whole connection cannot send, one per reason. The
+  // transmit reasons hold one at a time, while the connection's flow control
+  // can block alongside any of them.
+  quic_trace::SendBlocked quicTraceCongestionWindowBlocked;
+  quic_trace::SendBlocked quicTracePacingBlocked;
+  quic_trace::SendBlocked quicTraceAmplificationBlocked;
+  quic_trace::SendBlocked quicTraceConnectionFlowControlBlocked;
+#endif
 
   // Accessor to output buffer for continuous memory GSO writes
   BufAccessor* bufAccessor{nullptr};

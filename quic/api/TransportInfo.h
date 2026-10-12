@@ -67,6 +67,11 @@ struct TransportInfo {
   bool usedZeroRtt{false};
   // State from congestion control module, if one is installed.
   Optional<CongestionController::State> maybeCCState;
+#if defined(MVFST_MOQ_TRACE)
+  // Process-wide identity of the connection on quic_trace events, which MoQ
+  // object events stamp to join the packets that carried them.
+  std::optional<uint64_t> quicTraceConnectionId;
+#endif
 };
 
 } // namespace quic

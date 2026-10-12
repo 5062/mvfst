@@ -8,6 +8,7 @@
 #include <folly/Likely.h>
 #include <quic/QuicException.h>
 #include <quic/common/MvfstLogging.h> // For QuicError, QuicErrorCode, TransportErrorCode
+#include <quic/common/QuicTrace.h>
 #include <quic/common/StringUtils.h>
 #include <quic/common/udpsocket/QuicAsyncUDPSocketImpl.h>
 
@@ -99,8 +100,22 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
   }
 
   // recvmmsg
+#if defined(MVFST_MOQ_TRACE)
+  // The read completes when the system call returns, and every datagram it
+  // returned starts its packets' traces at that instant.
+  quic_trace::Socket quicTraceSocket(QUIC_TRACE_DIRECTION_RX);
+#endif
   int numMsgsRecvd = recvmmsg(msgs.data(), numPackets, flags, nullptr);
+#if defined(MVFST_MOQ_TRACE)
+  const int quicTraceErrno = numMsgsRecvd < 0 ? errno : 0;
+  const uint64_t quicTraceReadNs = quic_trace::now_ns();
+#endif
   if (numMsgsRecvd < 0) {
+#if defined(MVFST_MOQ_TRACE)
+    quicTraceSocket.finish_at(
+        quicTraceSocketOutcome(quicTraceErrno), {}, quicTraceReadNs);
+    errno = quicTraceErrno;
+#endif
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // Exit, socket will notify us again when socket is readable.
       return RecvResult(NoReadReason::RETRIABLE_ERROR);
@@ -121,6 +136,10 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
 
   // process msgs (packets) returned by recvmmsg
   MVCHECK_LE(numMsgsRecvd, numPackets);
+#if defined(MVFST_MOQ_TRACE)
+  const size_t quicTraceFirstDatagram = networkData.getPackets().size();
+  const size_t quicTraceFirstByte = totalData;
+#endif
   for (uint16_t i = 0; i < static_cast<uint16_t>(numMsgsRecvd); ++i) {
     auto& addr = recvmmsgStorage_.impl_[i].addr;
     auto& readBuffer = recvmmsgStorage_.impl_[i].readBuffer;
@@ -151,6 +170,9 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
 
     // timings
     ReceivedUdpPacket::Timings timings;
+#if defined(MVFST_MOQ_TRACE)
+    timings.quicTraceReadNs = quicTraceReadNs;
+#endif
 
     // socket timestamps
     //
@@ -212,6 +234,15 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
     }
   }
 
+#if defined(MVFST_MOQ_TRACE)
+  // Datagrams count GRO segments separately, as they become packets.
+  quicTraceSocket.finish_at(
+      QUIC_TRACE_SOCKET_OUTCOME_SUCCESS,
+      {.buffers = static_cast<uint64_t>(numMsgsRecvd),
+       .datagrams = networkData.getPackets().size() - quicTraceFirstDatagram,
+       .bytes = totalData - quicTraceFirstByte},
+      quicTraceReadNs);
+#endif
   return RecvResult(); // Success case
 }
 

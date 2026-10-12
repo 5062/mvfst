@@ -1477,6 +1477,14 @@ void QuicTransportBaseLite::pacedWriteDataToSocket() {
   [[maybe_unused]] auto self = sharedGuard();
   SCOPE_EXIT {
     self->maybeStopWriteLooperAndArmSocketWritableEvent();
+#if defined(MVFST_MOQ_TRACE)
+    // Every write attempt ends here, so a limit that started or stopped
+    // holding since the last one is seen now.
+    if (self->closeState_ != CloseState::CLOSED) {
+      quicTraceUpdateSendBlocked(
+          *self->conn_, self->getLooperPacingDelay() != 0us);
+    }
+#endif
   };
 
   if (!isConnectionPaced(*conn_)) {
@@ -3603,6 +3611,9 @@ QuicSocketLite::TransportInfo QuicTransportBaseLite::getTransportInfo() const {
   transportInfo.largestPacketSent = conn_->lossState.largestSent;
   transportInfo.usedZeroRtt = conn_->usedZeroRtt;
   transportInfo.maybeCCState = maybeCCState;
+#if defined(MVFST_MOQ_TRACE)
+  transportInfo.quicTraceConnectionId = conn_->quicTraceConnectionId;
+#endif
   return transportInfo;
 }
 

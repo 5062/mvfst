@@ -485,6 +485,13 @@ QuicPathManager::switchCurrentPath(PathIdType switchToPathId) {
   conn_.currentPathId = switchToPath.id;
   conn_.localAddress = switchToPath.localAddress;
   conn_.peerAddress = switchToPath.peerAddress;
+#if defined(MVFST_MOQ_TRACE)
+  // The connection now sends on another path, which holds until its next one.
+  quic_trace::connection_path(
+      conn_.quicTraceConnectionId,
+      quicTracePathEndpoint(switchToPath.localAddress),
+      quicTracePathEndpoint(switchToPath.peerAddress));
+#endif
 
   if (switchToPath.destinationConnectionId) {
     auto& destinationConnectionId = conn_.nodeType == QuicNodeType::Client

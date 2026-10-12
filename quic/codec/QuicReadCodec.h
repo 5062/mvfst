@@ -14,6 +14,7 @@
 #include <quic/common/BufUtil.h>
 #include <quic/common/ContiguousCursor.h>
 #include <quic/common/Optional.h>
+#include <quic/common/QuicTrace.h>
 #include <quic/handshake/Aead.h>
 #include <quic/state/AckStates.h>
 #include <quic/state/QuicTransportStatsCallback.h>
@@ -178,6 +179,14 @@ class QuicReadCodec {
   void setCodecParameters(CodecParameters params);
   void setClientConnectionId(ConnectionId connId);
   void setServerConnectionId(ConnectionId connId);
+
+#if defined(MVFST_MOQ_TRACE)
+  // Stamp the stage boundaries of the next packets parsed into `stamps`, or
+  // stop with nullptr. The caller owns the stamps and clears them per packet.
+  void setQuicTraceStamps(QuicTraceParseStamps* stamps) {
+    quicTraceStamps_ = stamps;
+  }
+#endif
   void setStatelessResetToken(StatelessResetToken statelessResetToken);
   // Type alias for constant-time comparison function pointer.
   using CryptoEqualFn = bool (*)(ByteRange, ByteRange);
@@ -214,6 +223,17 @@ class QuicReadCodec {
   Optional<TimePoint> getHandshakeDoneTime();
 
  private:
+#if defined(MVFST_MOQ_TRACE)
+  // Mark the start of a parse stage on the trace clock, when asked to.
+  void quicTraceStamp(std::optional<uint64_t> QuicTraceParseStamps::* stage) {
+    if (quicTraceStamps_) {
+      quicTraceStamps_->*stage = quic_trace::now_ns();
+    }
+  }
+
+  QuicTraceParseStamps* quicTraceStamps_{nullptr};
+#endif
+
   quic::Expected<CodecResult, QuicError> tryParseShortHeaderPacket(
       BufPtr data,
       const AckStates& ackStates,
