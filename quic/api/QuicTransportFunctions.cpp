@@ -2573,12 +2573,6 @@ void quicTraceUpdateSendBlocked(
       conn.quicTracePacingBlocked,
       QUIC_TRACE_SEND_BLOCKED_REASON_PACING,
       transmit == QUIC_TRACE_SEND_BLOCKED_REASON_PACING);
-  // Stream bytes the connection's MAX_DATA keeps from being sent.
-  update(
-      conn.quicTraceConnectionFlowControlBlocked,
-      QUIC_TRACE_SEND_BLOCKED_REASON_CONNECTION_FLOW_CONTROL,
-      conn.flowControlState.sumCurStreamBufferLen > 0 &&
-          getSendConnFlowControlBytesWire(conn) == 0);
 }
 #endif
 

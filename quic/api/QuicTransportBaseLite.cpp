@@ -643,6 +643,11 @@ QuicTransportBaseLite::unregisterStreamWriteCallback(StreamId id) {
     return quic::make_unexpected(LocalErrorCode::INVALID_OPERATION);
   }
   pendingWriteCallbacks_.erase(id);
+#if defined(MVFST_MOQ_TRACE)
+  if (auto* stream = conn_->streamManager->getStreamIfExists(id)) {
+    stream->quicTraceSendBufferBlocked.finish();
+  }
+#endif
   return {};
 }
 
@@ -1211,6 +1216,9 @@ void QuicTransportBaseLite::dispatchAsyncOp(AsyncOpData data) {
         return;
       }
       auto maxCanWrite = maxWritableOnStream(*stream);
+#if defined(MVFST_MOQ_TRACE)
+      quicTraceUpdateSendBufferBlocked(*stream, maxCanWrite == 0);
+#endif
       if (maxCanWrite != 0) {
         pendingWriteCallbacks_.erase(wcbIt);
         writeCallback->onStreamWriteReady(id, maxCanWrite);
@@ -2355,7 +2363,36 @@ void QuicTransportBaseLite::handleStreamStopSendingCallbacks() {
   }
 }
 
+#if defined(MVFST_MOQ_TRACE)
+void QuicTransportBaseLite::quicTraceUpdateSendBufferBlocked(
+    QuicStreamState& stream,
+    bool waiting) {
+  auto& interval = stream.quicTraceSendBufferBlocked;
+  if (!waiting || bufferSpaceAvailable() != 0) {
+    interval.finish();
+  } else if (!interval.active()) {
+    interval = quic_trace::SendBlocked(
+        conn_->quicTraceConnectionId,
+        QUIC_TRACE_SEND_BLOCKED_REASON_SEND_BUFFER,
+        stream.id);
+    quicTraceSendBufferBlocked_ = true;
+  }
+}
+#endif
+
 void QuicTransportBaseLite::handleConnWritable() {
+#if defined(MVFST_MOQ_TRACE)
+  // Freed buffer space ends every stream's wait for it.
+  if (quicTraceSendBufferBlocked_ && bufferSpaceAvailable() != 0) {
+    quicTraceSendBufferBlocked_ = false;
+    for (const auto& pendingWriteCallback : pendingWriteCallbacks_) {
+      if (auto* stream = conn_->streamManager->getStreamIfExists(
+              pendingWriteCallback.first)) {
+        stream->quicTraceSendBufferBlocked.finish();
+      }
+    }
+  }
+#endif
   auto maxConnWrite = maxWritableOnConn();
   if (maxConnWrite != 0) {
     // If the connection now has flow control, we may either have been blocked

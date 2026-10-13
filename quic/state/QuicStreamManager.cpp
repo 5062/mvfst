@@ -363,6 +363,9 @@ void QuicStreamManager::removeWritable(const QuicStreamState& stream) {
   } else {
     writeQueue().erase(PriorityQueue::Identifier::fromStreamID(stream.id));
     connFlowControlBlocked_.erase(stream.id);
+#if defined(MVFST_MOQ_TRACE)
+    stream.quicTraceConnectionFlowControlBlocked.finish();
+#endif
   }
   // Note: Loss counter is handled separately via removeLoss() when the stream
   // is actually being cleaned up. We don't update it here because:
@@ -455,11 +458,27 @@ void QuicStreamManager::clearActionable() {
 
 void QuicStreamManager::addConnFCBlockedStream(StreamId id) {
   connFlowControlBlocked_.insert(id);
+#if defined(MVFST_MOQ_TRACE)
+  // Each stream the connection's flow control holds records its own
+  // interval, as in Quinn and Google QUICHE.
+  auto* stream = findStream(id);
+  if (stream && !stream->quicTraceConnectionFlowControlBlocked.active()) {
+    stream->quicTraceConnectionFlowControlBlocked = quic_trace::SendBlocked(
+        conn_.quicTraceConnectionId,
+        QUIC_TRACE_SEND_BLOCKED_REASON_CONNECTION_FLOW_CONTROL,
+        id);
+  }
+#endif
 }
 
 void QuicStreamManager::onMaxData() {
   for (auto id : connFlowControlBlocked_) {
     auto stream = findStream(id);
+#if defined(MVFST_MOQ_TRACE)
+    if (stream) {
+      stream->quicTraceConnectionFlowControlBlocked.finish();
+    }
+#endif
     // Skip streams that drained (or were reset) while blocked: re-adding one
     // with nothing to write leaves a stale write-queue entry that spins the
     // write loop (shouldWriteData keeps returning STREAM).

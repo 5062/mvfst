@@ -710,6 +710,15 @@ class QuicTransportBaseLite : virtual public QuicSocketLite,
   void handleConnWritable();
   void cleanupAckEventState();
 
+#if defined(MVFST_MOQ_TRACE)
+  // Start or end the interval in which the full send buffer holds back the
+  // application's pending write on `stream`.
+  void quicTraceUpdateSendBufferBlocked(QuicStreamState& stream, bool waiting);
+  // Whether a stream may hold a send-buffer interval, which freed buffer
+  // space ends.
+  bool quicTraceSendBufferBlocked_{false};
+#endif
+
   [[nodiscard]] quic::Expected<WriteQuicDataResult, QuicError>
   handleInitialWriteDataCommon(
       const ConnectionId& srcConnId,

@@ -153,22 +153,19 @@ class QuicTraceRxPacket {
   /**
    * Record a STREAM frame once the stream handled it. The stream buffered the
    * bytes, duplicates included, only when it was still open for receiving,
-   * and no application code runs before this point.
+   * and no application code runs before this point. A frame the stream
+   * discarded is dropped, and one whose processing failed is malformed, as in
+   * Quinn and Google QUICHE.
    */
   void streamFrame(
       StreamId streamId,
       uint64_t offsetStart,
       uint64_t offsetEnd,
-      bool accepted) const {
+      quic_trace_packet_outcome outcome) const {
     if (offsetEnd <= offsetStart) {
       return;
     }
-    packet_.stream_frame(
-        streamId,
-        offsetStart,
-        offsetEnd,
-        accepted ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS
-                 : QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+    packet_.stream_frame(streamId, offsetStart, offsetEnd, outcome);
   }
 
  private:
@@ -1896,16 +1893,29 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
                      << " fin=" << frame.fin << " " << conn;
           pktHasRetransmittableData = true;
           isNonProbingPacket = true;
-          auto streamResult = conn.streamManager->getStream(frame.streamId);
-          if (streamResult.hasError()) {
-            return quic::make_unexpected(streamResult.error());
-          }
-          auto& stream = streamResult.value();
 #if defined(MVFST_MOQ_TRACE)
           const StreamId quicTraceStreamId = frame.streamId;
           const uint64_t quicTraceOffset = frame.offset;
           const uint64_t quicTraceLength =
               frame.data ? frame.data->computeChainDataLength() : 0;
+          const auto quicTraceStreamFrame =
+              [&](quic_trace_packet_outcome outcome) {
+                quicTrace.streamFrame(
+                    quicTraceStreamId,
+                    quicTraceOffset,
+                    quicTraceOffset + quicTraceLength,
+                    outcome);
+              };
+#endif
+          auto streamResult = conn.streamManager->getStream(frame.streamId);
+          if (streamResult.hasError()) {
+#if defined(MVFST_MOQ_TRACE)
+            quicTraceStreamFrame(QUIC_TRACE_PACKET_OUTCOME_MALFORMED);
+#endif
+            return quic::make_unexpected(streamResult.error());
+          }
+          auto& stream = streamResult.value();
+#if defined(MVFST_MOQ_TRACE)
           const bool quicTraceAccepted =
               stream && stream->recvState == StreamRecvState::Open;
 #endif
@@ -1914,15 +1924,16 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
             auto result =
                 receiveReadStreamFrameSMHandler(*stream, std::move(frame));
             if (result.hasError()) {
+#if defined(MVFST_MOQ_TRACE)
+              quicTraceStreamFrame(QUIC_TRACE_PACKET_OUTCOME_MALFORMED);
+#endif
               return quic::make_unexpected(result.error());
             }
           }
 #if defined(MVFST_MOQ_TRACE)
-          quicTrace.streamFrame(
-              quicTraceStreamId,
-              quicTraceOffset,
-              quicTraceOffset + quicTraceLength,
-              quicTraceAccepted);
+          quicTraceStreamFrame(
+              quicTraceAccepted ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS
+                                : QUIC_TRACE_PACKET_OUTCOME_DROPPED);
 #endif
           break;
         }

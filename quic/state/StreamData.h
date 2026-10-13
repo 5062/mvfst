@@ -349,6 +349,14 @@ struct QuicStreamState : public QuicStreamLike {
   // The interval in which this stream's peer flow control blocks its pending
   // writes. It ends when the window opens or the stream goes away.
   quic_trace::SendBlocked quicTraceFlowControlBlocked;
+  // The interval in which the connection's flow control holds this stream's
+  // pending writes, from when the scheduler finds it blocked until MAX_DATA
+  // or the stream leaves the write queue. The stream manager ends it from a
+  // const reference, so it is mutable.
+  mutable quic_trace::SendBlocked quicTraceConnectionFlowControlBlocked;
+  // The interval in which the full send buffer holds back the application's
+  // pending write on this stream.
+  quic_trace::SendBlocked quicTraceSendBufferBlocked;
 #endif
 
   QuicStreamState(StreamId id, QuicConnectionStateBase& conn);

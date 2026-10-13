@@ -254,7 +254,7 @@ uint64_t congestionControlWritableBytes(QuicConnectionStateBase& conn);
 
 #if defined(MVFST_MOQ_TRACE)
 /**
- * Re-evaluate the intervals in which the connection cannot send, after a
+ * Re-evaluate the intervals in which the connection cannot transmit, after a
  * write attempt. Data must be waiting for any reason to hold. `pacingDelayed`
  * says the pacer is holding the next write.
  */

@@ -17,11 +17,12 @@ The branch starts at `f21cfe029`, the mvfst revision that moxygen pins.
 | `FollyQuicAsyncUDPSocket::write`, `writeGSO`, `writem`, `writemGSO` | TX `udp_socket` around each `sendmsg` or `sendmmsg`, naming the connection whose batch sent, with buffers, GSO datagrams, and bytes |
 | `onServerReadDataFromOpen` | RX packet from the read's completion: `read_queue`, `header_parse`, `header_unprotect`, `payload_decrypt`, one `frame_process` per frame other than padding, and its outcome |
 | `QuicReadCodec` | the boundaries of the parse stages and the packet number space the header names, stamped only for a traced packet |
-| server `ReadStreamFrame` handling | RX `quic_stream_frame`, `success` when the stream buffered the bytes and `dropped` when it was no longer open for receiving |
+| server `ReadStreamFrame` handling | RX `quic_stream_frame`, `success` when the stream buffered the bytes, `dropped` when it was no longer open for receiving, and `malformed` when processing it failed |
 | `continuousMemoryBuildScheduleEncrypt`, `iobufChainBasedBuildScheduleEncrypt` | TX packet from the start of frame encoding: `frame_encode`, `packet_encrypt`, then `send_queue`, and its STREAM frames with their retransmission flag |
 | `IOBufQuicBatch` | TX packet end at the completion of the send that carried its batch, or `dropped` when that send failed |
 | first packet of a server connection, `QuicPathManager` path switch | `quic_connection_path` |
-| `pacedWriteDataToSocket`, flow control | `quic_send_blocked` for the congestion window, pacing, amplification, connection flow control, and per-stream flow control |
+| `pacedWriteDataToSocket` | `quic_send_blocked` for the first of amplification, the congestion window, and pacing that keeps data from being sent |
+| flow control, `QuicStreamManager` connection-blocked streams, pending write callbacks | per stream `quic_send_blocked` while stream or connection flow control holds the stream's pending writes, and while the full send buffer holds back the application's write |
 
 Each connection allocates a process-wide connection ID from the toolkit and
 exposes it as `TransportInfo::quicTraceConnectionId`, which moxygen stamps on its
@@ -61,10 +62,13 @@ made the send.
   `frame_process` phase abandoned.
 - **Server only.** The RX packet hooks sit in the server state machine. The
   client receives no packet traces.
-- **Send-blocked intervals.** The connection-wide reasons are evaluated after
-  every write attempt, so an interval ends at the first write after the limit
-  lifts. Only the first transmit limit that holds is recorded, in the order
-  amplification, congestion window, pacing.
+- **Send-blocked intervals.** The transmit reasons are evaluated after every
+  write attempt, so an interval ends at the first write after the limit lifts.
+  Only the first transmit limit that holds is recorded, in the order
+  amplification, congestion window, pacing. A blocked write records its interval
+  on its stream, with the stream ID, as in Quinn and Google QUICHE: connection
+  flow control from when the scheduler finds the stream blocked until MAX_DATA
+  arrives, and the send buffer while a write callback waits for buffer space.
 
 ## Build
 

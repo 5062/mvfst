@@ -341,13 +341,11 @@ struct QuicConnectionStateBase : public folly::DelayedDestruction {
   // connection's packets, sockets, and MoQ objects.
   const uint64_t quicTraceConnectionId{quic_trace::next_connection_id()};
 
-  // Intervals in which the whole connection cannot send, one per reason. The
-  // transmit reasons hold one at a time, while the connection's flow control
-  // can block alongside any of them.
+  // Intervals in which the whole connection cannot transmit, one per reason,
+  // of which one holds at a time. Blocked writes record theirs per stream.
   quic_trace::SendBlocked quicTraceCongestionWindowBlocked;
   quic_trace::SendBlocked quicTracePacingBlocked;
   quic_trace::SendBlocked quicTraceAmplificationBlocked;
-  quic_trace::SendBlocked quicTraceConnectionFlowControlBlocked;
 #endif
 
   // Accessor to output buffer for continuous memory GSO writes
