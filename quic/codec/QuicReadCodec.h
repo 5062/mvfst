@@ -224,7 +224,7 @@ class QuicReadCodec {
 
  private:
 #if defined(MVFST_MOQ_TRACE)
-  // Mark the start of a parse stage on the trace clock, when asked to.
+  // Mark the start of a parse stage on the quic_trace clock, when asked to.
   void quicTraceStamp(std::optional<uint64_t> QuicTraceParseStamps::* stage) {
     if (quicTraceStamps_) {
       quicTraceStamps_->*stage = quic_trace::now_ns();

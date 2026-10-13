@@ -143,7 +143,7 @@ using namespace quic;
  * A stream's write offset advances only once the packet is written, so a
  * frame below it resends bytes an earlier packet carried.
  */
-std::pair<quic_trace::Packet, quic_trace::PacketPhase> quicTraceBuilt(
+std::pair<quic_trace::Packet, quic_trace::PacketPhase> quicTraceStartTxPacket(
     QuicConnectionStateBase& connection,
     const RegularQuicWritePacket& packet,
     PacketNum packetNum,
@@ -179,7 +179,7 @@ std::pair<quic_trace::Packet, quic_trace::PacketPhase> quicTraceBuilt(
 }
 
 /** End encryption and start the packet's wait for the send that carries it. */
-quic_trace::PendingSend quicTraceEncrypted(
+quic_trace::PendingSend quicTraceFinishTxPacket(
     std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>&
         built,
     uint64_t encodedSize) {
@@ -541,7 +541,7 @@ continuousMemoryBuildScheduleEncrypt(
   std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>
       quicTrace;
   if (quicTraceEncodeStartNs) {
-    quicTrace = quicTraceBuilt(
+    quicTrace = quicTraceStartTxPacket(
         connection, packet->packet, packetNum, *quicTraceEncodeStartNs);
   }
 #endif
@@ -578,7 +578,7 @@ continuousMemoryBuildScheduleEncrypt(
   auto encodedSize = packetBuf->length();
   auto encodedBodySize = encodedSize - headerLen;
 #if defined(MVFST_MOQ_TRACE)
-  auto quicTraceSending = quicTraceEncrypted(quicTrace, encodedSize);
+  auto quicTracePending = quicTraceFinishTxPacket(quicTrace, encodedSize);
 #endif
   encodedSize += sconePacketSize;
   if (sconePacketSize) {
@@ -619,7 +619,7 @@ continuousMemoryBuildScheduleEncrypt(
   auto writeResult = ioBufBatch.write(
       nullptr /* no need to pass buf */,
       encodedSize,
-      std::move(quicTraceSending));
+      std::move(quicTracePending));
 #else
   auto writeResult =
       ioBufBatch.write(nullptr /* no need to pass buf */, encodedSize);
@@ -719,7 +719,7 @@ iobufChainBasedBuildScheduleEncrypt(
   std::optional<std::pair<quic_trace::Packet, quic_trace::PacketPhase>>
       quicTrace;
   if (quicTraceEncodeStartNs) {
-    quicTrace = quicTraceBuilt(
+    quicTrace = quicTraceStartTxPacket(
         connection, packet->packet, packetNum, *quicTraceEncodeStartNs);
   }
 #endif
@@ -768,7 +768,7 @@ iobufChainBasedBuildScheduleEncrypt(
   auto encodedSize = packetBuf->computeChainDataLength();
   auto encodedBodySize = encodedSize - headerLen;
 #if defined(MVFST_MOQ_TRACE)
-  auto quicTraceSending = quicTraceEncrypted(quicTrace, encodedSize);
+  auto quicTracePending = quicTraceFinishTxPacket(quicTrace, encodedSize);
 #endif
 
   // SCONE: Prepend pre-built SCONE packet for co-alescing (size already
@@ -812,7 +812,7 @@ iobufChainBasedBuildScheduleEncrypt(
   }
 #if defined(MVFST_MOQ_TRACE)
   auto writeResult = ioBufBatch.write(
-      std::move(packetBuf), encodedSize, std::move(quicTraceSending));
+      std::move(packetBuf), encodedSize, std::move(quicTracePending));
 #else
   auto writeResult = ioBufBatch.write(std::move(packetBuf), encodedSize);
 #endif
@@ -2531,7 +2531,7 @@ quic::Expected<WriteQuicDataResult, QuicError> writeProbingDataToSocket(
 }
 
 #if defined(MVFST_MOQ_TRACE)
-void quicTraceUpdateSendBlocked(
+void quicTraceUpdateTransmitBlocked(
     QuicConnectionStateBase& conn,
     bool pacingDelayed) {
   const bool waiting = hasNonAckDataToWrite(conn) != WriteDataReason::NO_WRITE;

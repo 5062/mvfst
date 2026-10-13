@@ -1489,7 +1489,7 @@ void QuicTransportBaseLite::pacedWriteDataToSocket() {
     // Every write attempt ends here, so a limit that started or stopped
     // holding since the last one is seen now.
     if (self->closeState_ != CloseState::CLOSED) {
-      quicTraceUpdateSendBlocked(
+      quicTraceUpdateTransmitBlocked(
           *self->conn_, self->getLooperPacingDelay() != 0us);
     }
 #endif

@@ -348,7 +348,7 @@ struct QuicStreamState : public QuicStreamLike {
 #if defined(MVFST_MOQ_TRACE)
   // The interval in which this stream's peer flow control blocks its pending
   // writes. It ends when the window opens or the stream goes away.
-  quic_trace::SendBlocked quicTraceFlowControlBlocked;
+  quic_trace::SendBlocked quicTraceStreamFlowControlBlocked;
   // The interval in which the connection's flow control holds this stream's
   // pending writes, from when the scheduler finds it blocked until MAX_DATA
   // or the stream leaves the write queue. The stream manager ends it from a

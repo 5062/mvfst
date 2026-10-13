@@ -24,6 +24,7 @@
 #define SOF_TIMESTAMPING_SOFTWARE 0
 #endif
 
+#include <quic/common/QuicTrace.h>
 #include <quic/common/SocketUtil.h>
 #include <quic/congestion_control/Bbr.h>
 #include <quic/congestion_control/Copa.h>
@@ -36,10 +37,6 @@
 #include <quic/server/third-party/siphash.h>
 #include <quic/state/ConnectionOopsFields.h>
 #include <quic/state/QuicConnectionStats.h>
-
-#if defined(MVFST_MOQ_TRACE)
-#include <quic/common/QuicTrace.h>
-#endif
 
 // This hook is invoked by mvfst for every UDP socket it creates.
 #if FOLLY_HAVE_WEAK_SYMBOLS
@@ -74,8 +71,7 @@ class QuicTraceReadDispatcher : public folly::netops::Dispatcher {
     });
   }
 
-  ssize_t recvmsg(folly::NetworkSocket s, msghdr* message, int flags)
-      override {
+  ssize_t recvmsg(folly::NetworkSocket s, msghdr* message, int flags) override {
     size_t capacity = 0;
     for (size_t i = 0; i < message->msg_iovlen; ++i) {
       capacity += message->msg_iov[i].iov_len;
@@ -92,11 +88,11 @@ class QuicTraceReadDispatcher : public folly::netops::Dispatcher {
    */
   template <typename Read>
   static ssize_t traced(size_t capacity, msghdr* message, Read&& read) {
-    quic_trace::SocketCall call(QUIC_TRACE_DIRECTION_RX);
+    quic_trace::SocketCall quicTraceCall(QUIC_TRACE_DIRECTION_RX);
     const ssize_t result = read();
-    const auto readNs = call.returned();
+    const auto quicTraceReadNs = quicTraceCall.returned();
     if (result < 0) {
-      call.failed(errno);
+      quicTraceCall.failed(errno);
       return result;
     }
     const auto bytes = std::min(static_cast<size_t>(result), capacity);
@@ -106,8 +102,8 @@ class QuicTraceReadDispatcher : public folly::netops::Dispatcher {
       folly::AsyncUDPSocket::fromMsg(params, *message);
       segment = params.gro > 0 ? static_cast<uint64_t>(params.gro) : 0;
     }
-    call.succeeded(quic_trace::SocketStats::buffer(bytes, segment));
-    quic::quicTraceLastReadNs = readNs;
+    quicTraceCall.succeeded(quic_trace::SocketStats::buffer(bytes, segment));
+    quic::quicTraceLastReadNs = quicTraceReadNs;
     return result;
   }
 };

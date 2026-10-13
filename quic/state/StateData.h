@@ -41,10 +41,9 @@
 #include <folly/container/F14Map.h>
 #include <folly/io/async/DelayedDestruction.h>
 #include <quic/common/Optional.h>
-
 #include <quic/common/QuicTrace.h>
-#include <chrono>
 
+#include <chrono>
 #include <list>
 #include <numeric>
 #include <queue>

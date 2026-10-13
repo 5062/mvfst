@@ -490,15 +490,15 @@ namespace {
  * pending writes. Called wherever mvfst learns that the stream's window or its
  * pending data changed.
  */
-void quicTraceUpdateStreamFlowControl(QuicStreamState& stream) {
+void quicTraceUpdateStreamFlowControlBlocked(QuicStreamState& stream) {
   const bool blocked = stream.sendState != StreamSendState::Closed &&
       stream.sendState != StreamSendState::ResetSent &&
       stream.pendingWriteBytes() > 0 &&
       getSendStreamFlowControlBytesWire(stream) == 0;
   if (!blocked) {
-    stream.quicTraceFlowControlBlocked.finish();
-  } else if (!stream.quicTraceFlowControlBlocked.active()) {
-    stream.quicTraceFlowControlBlocked = quic_trace::SendBlocked(
+    stream.quicTraceStreamFlowControlBlocked.finish();
+  } else if (!stream.quicTraceStreamFlowControlBlocked.active()) {
+    stream.quicTraceStreamFlowControlBlocked = quic_trace::SendBlocked(
         stream.conn.quicTraceConnectionId,
         QUIC_TRACE_SEND_BLOCKED_REASON_STREAM_FLOW_CONTROL,
         stream.id);
@@ -515,7 +515,7 @@ void maybeWriteBlockAfterAPIWrite(
     QuicStreamState& stream,
     bool hadPendingWrites) {
 #if defined(MVFST_MOQ_TRACE)
-  quicTraceUpdateStreamFlowControl(stream);
+  quicTraceUpdateStreamFlowControlBlocked(stream);
 #endif
   // Only write blocked when stream becomes blocked
   if (getSendStreamFlowControlBytesWire(stream) == 0 && !hadPendingWrites) {
@@ -535,7 +535,7 @@ void maybeWriteDataBlockedAfterSocketWrite(QuicConnectionStateBase& conn) {
 
 void maybeWriteBlockAfterSocketWrite(QuicStreamState& stream) {
 #if defined(MVFST_MOQ_TRACE)
-  quicTraceUpdateStreamFlowControl(stream);
+  quicTraceUpdateStreamFlowControlBlocked(stream);
 #endif
   // Only write blocked when the flow control bytes are used up and there are
   // still pending data
@@ -590,7 +590,7 @@ void handleStreamWindowUpdate(
     stream.conn.streamManager->updateWritableStreams(
         stream, getSendConnFlowControlBytesWire(stream.conn) > 0);
 #if defined(MVFST_MOQ_TRACE)
-    quicTraceUpdateStreamFlowControl(stream);
+    quicTraceUpdateStreamFlowControlBlocked(stream);
 #endif
     // Note: Stream window updates are redundant - MAX_STREAM_DATA frames
     // already logged in packet events

@@ -38,10 +38,8 @@ class IOBufQuicBatch {
 #if defined(MVFST_MOQ_TRACE)
   // Write a traced packet. Its trace waits in the batch from the end of its
   // encryption until the send that carries it completes, and ends there.
-  [[nodiscard]] quic::Expected<bool, QuicError> write(
-      BufPtr&& buf,
-      size_t encodedSize,
-      quic_trace::PendingSend&& trace);
+  [[nodiscard]] quic::Expected<bool, QuicError>
+  write(BufPtr&& buf, size_t encodedSize, quic_trace::PendingSend&& trace);
 #endif
 
   [[nodiscard]] quic::Expected<bool, QuicError> flush();

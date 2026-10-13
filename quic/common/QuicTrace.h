@@ -91,7 +91,7 @@ quic_trace::PathEndpoint quicTracePathEndpoint(const Address& address) {
 
 /**
  * Boundaries of one packet's stages inside QuicReadCodec::parsePacket, on the
- * trace clock.
+ * quic_trace clock.
  *
  * The codec stamps a stage only when its caller asked it to, so an untraced
  * read reads no clock. A stage the packet never reached stays unset.

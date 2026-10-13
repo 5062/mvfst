@@ -258,7 +258,7 @@ uint64_t congestionControlWritableBytes(QuicConnectionStateBase& conn);
  * write attempt. Data must be waiting for any reason to hold. `pacingDelayed`
  * says the pacer is holding the next write.
  */
-void quicTraceUpdateSendBlocked(
+void quicTraceUpdateTransmitBlocked(
     QuicConnectionStateBase& conn,
     bool pacingDelayed);
 #endif
