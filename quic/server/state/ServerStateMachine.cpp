@@ -43,8 +43,8 @@ constexpr size_t kConnIdEncodingRetryLimit = 32;
  *
  * A datagram from no traced read gets no trace. Coalesced packets share their
  * datagram's read, so each records its wait from that read as read_queue. The
- * outcome stays dropped unless processing completes or sets another, so a
- * packet that leaves the loop early records why.
+ * packet ends with the outcome last set, and one that leaves the loop without
+ * any records itself abandoned.
  */
 class QuicTraceRxPacket {
  public:
@@ -71,8 +71,9 @@ class QuicTraceRxPacket {
   QuicTraceRxPacket& operator=(const QuicTraceRxPacket&) = delete;
 
   ~QuicTraceRxPacket() {
-    frameProcess_.finish(outcome_);
-    packet_.finish(outcome_);
+    if (outcome_) {
+      packet_.finish(*outcome_);
+    }
   }
 
   /** Where the codec stamps this packet's parse stages, if it is traced. */
@@ -82,8 +83,9 @@ class QuicTraceRxPacket {
 
   /**
    * Record the parse stages once the codec returned. A stage that a later one
-   * followed succeeded, and the last one reached ends now with `outcome`. A
-   * regular packet's frame decoding continues into frame processing.
+   * followed succeeded, and the last one reached ends now with `outcome`.
+   * Decoding a regular packet's frames, which the codec does before any is
+   * processed, belongs to no phase, as Quinn's interleaved decoding does not.
    */
   void parsed(
       quic_trace_packet_outcome outcome,
@@ -94,6 +96,9 @@ class QuicTraceRxPacket {
     }
     const uint64_t endNs = quic_trace::now_ns();
     packet_.set_byte_len(packetSize);
+    if (stamps_.space) {
+      packet_.set_space(*stamps_.space);
+    }
     const std::
         array<std::pair<quic_trace_packet_phase, std::optional<uint64_t>>, 3>
             stages{{
@@ -123,13 +128,21 @@ class QuicTraceRxPacket {
     }
     if (regular) {
       packet_.set_number(regular->header.getPacketSequenceNum());
-      packet_.set_space(
-          quicTracePacketSpace(regular->header.getProtectionType()));
-      frameProcess_ = packet_.phase_at(
-          QUIC_TRACE_PACKET_PHASE_FRAME_PROCESS,
-          stamps_.decodeStartNs.value_or(endNs));
     }
     outcome_ = outcome;
+  }
+
+  /**
+   * Start processing one decoded frame, in its own frame_process phase.
+   *
+   * Padding is skipped rather than processed, so it has no phase. A frame
+   * that ends processing with an error leaves its phase abandoned.
+   */
+  quic_trace::PacketPhase frame(QuicFrame::Type type) const {
+    if (type == QuicFrame::Type::PaddingFrame) {
+      return {};
+    }
+    return packet_.phase(QUIC_TRACE_PACKET_PHASE_FRAME_PROCESS);
   }
 
   /** Set how the packet ends, unless a later step changes it. */
@@ -160,10 +173,9 @@ class QuicTraceRxPacket {
 
  private:
   quic_trace::Packet packet_;
-  quic_trace::PacketPhase frameProcess_;
   std::optional<uint64_t> parseStartNs_;
   QuicTraceParseStamps stamps_;
-  quic_trace_packet_outcome outcome_{QUIC_TRACE_PACKET_OUTCOME_DROPPED};
+  std::optional<quic_trace_packet_outcome> outcome_;
 };
 #endif
 
@@ -1393,8 +1405,10 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
             QUIC_TRACE_PACKET_OUTCOME_SUCCESS,
             packetSize,
             parsedPacket.regularPacket());
-        // Processing has not finished, so the packet is not yet a success.
-        quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+        // Processing has not finished. A packet that leaves it through an
+        // error is malformed, as in Quinn, and every other exit sets its own
+        // outcome.
+        quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_MALFORMED);
         break;
       case CodecResult::Type::NOTHING:
         quicTrace.parsed(
@@ -1514,9 +1528,6 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
           conn.statsCallback,
           onPacketDropped,
           PacketDropReason::PROTOCOL_VIOLATION);
-#if defined(MVFST_MOQ_TRACE)
-      quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_MALFORMED);
-#endif
       return quic::make_unexpected(QuicError(
           TransportErrorCode::PROTOCOL_VIOLATION, "Packet has no frames"));
     }
@@ -1609,6 +1620,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
             onPacketDropped,
             PacketDropReason::PEER_ADDRESS_CHANGE);
         if (!conn.transportSettings.closeIfMigrationDuringHandshake) {
+#if defined(MVFST_MOQ_TRACE)
+          quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+#endif
           continue;
         }
         const char* errMsg = encryptionLevel != EncryptionLevel::AppData
@@ -1638,6 +1652,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
           conn.statsCallback,
           onPacketDropped,
           PacketDropReason::DUPLICATE_PACKET);
+#if defined(MVFST_MOQ_TRACE)
+      quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+#endif
       continue;
     }
     uint64_t distanceFromExpectedPacketNum =
@@ -1764,6 +1781,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
     }
 
     for (auto& quicFrame : regularPacket.frames) {
+#if defined(MVFST_MOQ_TRACE)
+      auto quicTraceFrame = quicTrace.frame(quicFrame.type());
+#endif
       switch (quicFrame.type()) {
         case QuicFrame::Type::ReadAckFrame: {
           MVVLOG(10) << "Server received ack frame packet=" << packetNum << " "
@@ -1990,6 +2010,11 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
               conn.flowControlState.sumCurStreamBufferLen) {
             MVVLOG(2) << "Client gives up a flow control blocked connection";
           }
+#if defined(MVFST_MOQ_TRACE)
+          // The frame and its packet were processed; the connection closes.
+          quicTraceFrame.finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+          quicTrace.setOutcome(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+#endif
           return {};
         }
         case QuicFrame::Type::PingFrame:
@@ -2050,6 +2075,9 @@ quic::Expected<void, QuicError> onServerReadDataFromOpen(
           break;
         }
       }
+#if defined(MVFST_MOQ_TRACE)
+      quicTraceFrame.finish(QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
+#endif
     }
 
     if (handshakeConfirmedThisLoop) {

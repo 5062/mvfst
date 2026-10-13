@@ -46,6 +46,14 @@ class IOBufQuicBatch {
 
   [[nodiscard]] quic::Expected<bool, QuicError> flush();
 
+#if defined(MVFST_MOQ_TRACE)
+  // Name the connection whose packets this batch sends on its udp_socket
+  // events.
+  void setQuicTraceConnectionId(uint64_t connectionId) {
+    quicTraceConnectionId_ = connectionId;
+  }
+#endif
+
   FOLLY_ALWAYS_INLINE uint64_t getPktSent() const {
     return result_.packetsSent;
   }
@@ -83,6 +91,7 @@ class IOBufQuicBatch {
   void quicTraceFinishPending(quic_trace_packet_outcome outcome);
 
   quic_trace::PendingSend quicTracePending_;
+  std::optional<uint64_t> quicTraceConnectionId_;
 #endif
 };
 

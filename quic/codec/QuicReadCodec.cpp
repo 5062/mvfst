@@ -225,6 +225,7 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::parseLongHeaderPacket(
       currentPacketData->writableData() + packetNumberOffset,
       kMaxPacketNumEncodingSize);
 #if defined(MVFST_MOQ_TRACE)
+  quicTraceSpace(quicTracePacketSpace(longHeaderTypeToProtectionType(type)));
   quicTraceStamp(&QuicTraceParseStamps::unprotectStartNs);
 #endif
   auto decryptResult = headerCipher->decryptLongHeader(
@@ -311,6 +312,7 @@ quic::Expected<CodecResult, QuicError> QuicReadCodec::tryParseShortHeaderPacket(
   ByteRange sampleByteRange(data->writableData() + sampleOffset, sample.size());
 
 #if defined(MVFST_MOQ_TRACE)
+  quicTraceSpace(QUIC_TRACE_PACKET_SPACE_DATA);
   quicTraceStamp(&QuicTraceParseStamps::unprotectStartNs);
 #endif
   auto decryptResult = oneRttHeaderCipher_->decryptShortHeader(

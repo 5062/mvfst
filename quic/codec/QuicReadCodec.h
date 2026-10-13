@@ -231,6 +231,13 @@ class QuicReadCodec {
     }
   }
 
+  // Record the packet number space the header names, when asked to.
+  void quicTraceSpace(quic_trace_packet_space space) {
+    if (quicTraceStamps_) {
+      quicTraceStamps_->space = space;
+    }
+  }
+
   QuicTraceParseStamps* quicTraceStamps_{nullptr};
 #endif
 

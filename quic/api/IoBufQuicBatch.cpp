@@ -5,6 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#include <folly/ScopeGuard.h>
 #include <quic/api/IoBufQuicBatch.h>
 #include <quic/common/MvfstLogging.h>
 #include <quic/common/SocketUtil.h>
@@ -84,6 +85,12 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
     return true;
   }
 
+#if defined(MVFST_MOQ_TRACE)
+  quicTraceSendConnectionId = quicTraceConnectionId_;
+  SCOPE_EXIT {
+    quicTraceSendConnectionId.reset();
+  };
+#endif
   bool written = false;
   Optional<int> firstSocketErrno;
   if (!happyEyeballsState_ || happyEyeballsState_->shouldWriteToFirstSocket) {

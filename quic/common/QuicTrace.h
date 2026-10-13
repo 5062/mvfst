@@ -33,6 +33,15 @@ namespace quic {
 inline thread_local std::optional<uint64_t> quicTraceLastSendNs;
 
 /**
+ * The connection whose batch is making a send system call on this thread.
+ *
+ * IOBufQuicBatch sets it around its flush, so the socket wrapper's TX
+ * udp_socket event names the connection, as Quinn's does. A send made outside
+ * a connection's batch, such as a stateless reset, names none.
+ */
+inline thread_local std::optional<uint64_t> quicTraceSendConnectionId;
+
+/**
  * The completion of the latest datagram read made on this thread through
  * folly's read loop.
  *
@@ -91,6 +100,9 @@ struct QuicTraceParseStamps {
   std::optional<uint64_t> unprotectStartNs;
   std::optional<uint64_t> decryptStartNs;
   std::optional<uint64_t> decodeStartNs;
+  // The packet number space its header names, known before decryption, so a
+  // packet that never decrypts still records it.
+  std::optional<quic_trace_packet_space> space;
 };
 
 } // namespace quic

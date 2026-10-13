@@ -14,9 +14,9 @@ The branch starts at `f21cfe029`, the mvfst revision that moxygen pins.
 | --- | --- |
 | `QuicAsyncUDPSocketImpl::recvmmsgNetworkData` | RX `udp_socket` around the `recvmmsg` call, and the call's completion stamped on every datagram it returned |
 | `QuicServerWorker` read dispatcher | RX `udp_socket` around each `recvmsg` or `recvfrom` of folly's read loop, with GRO datagrams, and the call's completion stamped on the datagram `onDataAvailable` receives |
-| `FollyQuicAsyncUDPSocket::write`, `writeGSO`, `writem`, `writemGSO` | TX `udp_socket` around each `sendmsg` or `sendmmsg`, with buffers, GSO datagrams, and bytes |
-| `onServerReadDataFromOpen` | RX packet from the read's completion: `read_queue`, `header_parse`, `header_unprotect`, `payload_decrypt`, `frame_process`, and its outcome |
-| `QuicReadCodec` | the boundaries of the parse stages, stamped only for a traced packet |
+| `FollyQuicAsyncUDPSocket::write`, `writeGSO`, `writem`, `writemGSO` | TX `udp_socket` around each `sendmsg` or `sendmmsg`, naming the connection whose batch sent, with buffers, GSO datagrams, and bytes |
+| `onServerReadDataFromOpen` | RX packet from the read's completion: `read_queue`, `header_parse`, `header_unprotect`, `payload_decrypt`, one `frame_process` per frame other than padding, and its outcome |
+| `QuicReadCodec` | the boundaries of the parse stages and the packet number space the header names, stamped only for a traced packet |
 | server `ReadStreamFrame` handling | RX `quic_stream_frame`, `success` when the stream buffered the bytes and `dropped` when it was no longer open for receiving |
 | `continuousMemoryBuildScheduleEncrypt`, `iobufChainBasedBuildScheduleEncrypt` | TX packet from the start of frame encoding: `frame_encode`, `packet_encrypt`, then `send_queue`, and its STREAM frames with their retransmission flag |
 | `IOBufQuicBatch` | TX packet end at the completion of the send that carried its batch, or `dropped` when that send failed |
@@ -25,8 +25,9 @@ The branch starts at `f21cfe029`, the mvfst revision that moxygen pins.
 
 Each connection allocates a process-wide connection ID from the toolkit and
 exposes it as `TransportInfo::quicTraceConnectionId`, which moxygen stamps on its
-MoQ objects. Socket events carry no connection ID, because one server socket
-serves every connection.
+MoQ objects. RX socket events carry no connection ID, because one server socket
+serves every connection, and TX socket events name the connection whose batch
+made the send.
 
 ## Boundaries
 
@@ -51,6 +52,13 @@ serves every connection.
 - **Undecryptable packets.** A packet that arrives before its keys ends `dropped`,
   and when mvfst replays it with the keys it is traced again from its original
   read time.
+- **Packet outcomes.** These match the Quinn fork's. A packet that parses but
+  leaves processing through an error ends `malformed`, a duplicate or one from
+  a peer that may not migrate ends `dropped`, and one whose processing
+  completes, including one that closes the connection, ends `success`. Decoding
+  a packet's frames, which the codec does before any is processed, belongs to
+  no phase. A frame that ends processing with an error leaves its
+  `frame_process` phase abandoned.
 - **Server only.** The RX packet hooks sit in the server state machine. The
   client receives no packet traces.
 - **Send-blocked intervals.** The connection-wide reasons are evaluated after

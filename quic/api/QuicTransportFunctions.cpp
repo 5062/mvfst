@@ -2231,6 +2231,9 @@ quic::Expected<WriteQuicDataResult, QuicError> writeConnectionDataToSocket(
       peerAddress,
       connection.statsCallback,
       happyEyeballsState);
+#if defined(MVFST_MOQ_TRACE)
+  ioBufBatch.setQuicTraceConnectionId(connection.quicTraceConnectionId);
+#endif
 
   auto batchSize = connection.transportSettings.batchingMode ==
           QuicBatchingMode::BATCHING_MODE_NONE

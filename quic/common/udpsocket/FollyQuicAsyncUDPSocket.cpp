@@ -190,7 +190,8 @@ uint64_t quicTraceSegmentSize(int gso) {
  */
 template <typename Send, typename Stats>
 auto quicTraceSend(Send&& send, Stats&& stats) {
-  quic_trace::SocketCall call(QUIC_TRACE_DIRECTION_TX);
+  quic_trace::SocketCall call(
+      QUIC_TRACE_DIRECTION_TX, quicTraceSendConnectionId);
   const auto result = send();
   quicTraceLastSendNs = call.returned();
   if (result < 0) {
