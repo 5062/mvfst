@@ -92,26 +92,22 @@ class QuicTraceReadDispatcher : public folly::netops::Dispatcher {
    */
   template <typename Read>
   static ssize_t traced(size_t capacity, msghdr* message, Read&& read) {
-    quic_trace::Socket socket(QUIC_TRACE_DIRECTION_RX);
+    quic_trace::SocketCall call(QUIC_TRACE_DIRECTION_RX);
     const ssize_t result = read();
-    const int error = result < 0 ? errno : 0;
-    const uint64_t readNs = quic_trace::now_ns();
-    quic_trace::SocketStats stats;
-    if (result >= 0) {
-      const auto bytes = std::min(static_cast<size_t>(result), capacity);
-      size_t segment = 0;
-      if (message) {
-        folly::AsyncUDPSocket::ReadCallback::OnDataAvailableParams params;
-        folly::AsyncUDPSocket::fromMsg(params, *message);
-        segment = params.gro > 0 ? static_cast<size_t>(params.gro) : 0;
-      }
-      stats.buffers = 1;
-      stats.datagrams = segment > 0 ? (bytes + segment - 1) / segment : 1;
-      stats.bytes = bytes;
-      quic::quicTraceLastReadNs = readNs;
+    const auto readNs = call.returned();
+    if (result < 0) {
+      call.failed(errno);
+      return result;
     }
-    socket.finish_at(quic_trace::socket_outcome(error), stats, readNs);
-    errno = error;
+    const auto bytes = std::min(static_cast<size_t>(result), capacity);
+    uint64_t segment = 0;
+    if (message) {
+      folly::AsyncUDPSocket::ReadCallback::OnDataAvailableParams params;
+      folly::AsyncUDPSocket::fromMsg(params, *message);
+      segment = params.gro > 0 ? static_cast<uint64_t>(params.gro) : 0;
+    }
+    call.succeeded(quic_trace::SocketStats::buffer(bytes, segment));
+    quic::quicTraceLastReadNs = readNs;
     return result;
   }
 };

@@ -103,18 +103,15 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
 #if defined(MVFST_MOQ_TRACE)
   // The read completes when the system call returns, and every datagram it
   // returned starts its packets' traces at that instant.
-  quic_trace::Socket quicTraceSocket(QUIC_TRACE_DIRECTION_RX);
+  quic_trace::SocketCall quicTraceCall(QUIC_TRACE_DIRECTION_RX);
 #endif
   int numMsgsRecvd = recvmmsg(msgs.data(), numPackets, flags, nullptr);
 #if defined(MVFST_MOQ_TRACE)
-  const int quicTraceErrno = numMsgsRecvd < 0 ? errno : 0;
-  const uint64_t quicTraceReadNs = quic_trace::now_ns();
+  const auto quicTraceReadNs = quicTraceCall.returned();
 #endif
   if (numMsgsRecvd < 0) {
 #if defined(MVFST_MOQ_TRACE)
-    quicTraceSocket.finish_at(
-        quic_trace::socket_outcome(quicTraceErrno), {}, quicTraceReadNs);
-    errno = quicTraceErrno;
+    quicTraceCall.failed(errno);
 #endif
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // Exit, socket will notify us again when socket is readable.
@@ -236,12 +233,10 @@ QuicAsyncUDPSocketImpl::recvmmsgNetworkData(
 
 #if defined(MVFST_MOQ_TRACE)
   // Datagrams count GRO segments separately, as they become packets.
-  quicTraceSocket.finish_at(
-      QUIC_TRACE_SOCKET_OUTCOME_SUCCESS,
+  quicTraceCall.succeeded(
       {.buffers = static_cast<uint64_t>(numMsgsRecvd),
        .datagrams = networkData.getPackets().size() - quicTraceFirstDatagram,
-       .bytes = totalData - quicTraceFirstByte},
-      quicTraceReadNs);
+       .bytes = totalData - quicTraceFirstByte});
 #endif
   return RecvResult(); // Success case
 }

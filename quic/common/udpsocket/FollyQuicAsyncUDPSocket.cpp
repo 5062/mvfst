@@ -176,29 +176,28 @@ uint64_t quicTraceIovecBytes(const struct iovec* vec, size_t len) {
   return bytes;
 }
 
-uint64_t quicTraceSegments(uint64_t bytes, int gso) {
-  return gso > 0 ? (bytes + gso - 1) / gso : 1;
+// The GSO segment size of a send, or 0 when the kernel does not split it.
+uint64_t quicTraceSegmentSize(int gso) {
+  return gso > 0 ? static_cast<uint64_t>(gso) : 0;
 }
 
 /**
  * Run one send system call inside a udp_socket event.
  *
- * `stats` turns the call's result into the batch it accepted. The clock is
- * read as soon as the call returns, and that instant is left in
- * quicTraceLastSendNs for the batch whose packets the call carried.
+ * `stats` turns the call's result into the batch it accepted. The instant the
+ * call returned is left in quicTraceLastSendNs for the batch whose packets the
+ * call carried, and is empty while nothing is traced.
  */
 template <typename Send, typename Stats>
 auto quicTraceSend(Send&& send, Stats&& stats) {
-  quic_trace::Socket socket(QUIC_TRACE_DIRECTION_TX);
+  quic_trace::SocketCall call(QUIC_TRACE_DIRECTION_TX);
   const auto result = send();
-  const int error = result < 0 ? errno : 0;
-  const uint64_t sentNs = quic_trace::now_ns();
-  quicTraceLastSendNs = sentNs;
-  socket.finish_at(
-      quic_trace::socket_outcome(error),
-      result < 0 ? quic_trace::SocketStats{} : stats(result),
-      sentNs);
-  errno = error;
+  quicTraceLastSendNs = call.returned();
+  if (result < 0) {
+    call.failed(errno);
+  } else {
+    call.succeeded(stats(result));
+  }
   return result;
 }
 
@@ -213,8 +212,7 @@ ssize_t FollyQuicAsyncUDPSocket::write(
   return quicTraceSend(
       [&] { return writeImpl(address, vec, iovec_len); },
       [](ssize_t sent) {
-        return quic_trace::SocketStats{
-            .buffers = 1, .datagrams = 1, .bytes = uint64_t(sent)};
+        return quic_trace::SocketStats::buffer(uint64_t(sent));
       });
 }
 
@@ -250,11 +248,11 @@ int FollyQuicAsyncUDPSocket::writem(
       [&] { return writemImpl(addrs, iov, numIovecsInBuffer, count); },
       [&](int sent) {
         // A partial sendmmsg accepted only its first `sent` messages.
-        quic_trace::SocketStats stats{
-            .buffers = uint64_t(sent), .datagrams = uint64_t(sent)};
+        quic_trace::SocketStats stats;
         const iovec* message = iov;
         for (int i = 0; i < sent; ++i) {
-          stats.bytes += quicTraceIovecBytes(message, numIovecsInBuffer[i]);
+          stats += quic_trace::SocketStats::buffer(
+              quicTraceIovecBytes(message, numIovecsInBuffer[i]));
           message += numIovecsInBuffer[i];
         }
         return stats;
@@ -288,10 +286,8 @@ ssize_t FollyQuicAsyncUDPSocket::writeGSO(
       [&] { return writeGSOImpl(address, vec, iovec_len, options); },
       [&](ssize_t sent) {
         // One buffer the kernel splits into GSO segments, one per datagram.
-        return quic_trace::SocketStats{
-            .buffers = 1,
-            .datagrams = quicTraceSegments(uint64_t(sent), options.gso),
-            .bytes = uint64_t(sent)};
+        return quic_trace::SocketStats::buffer(
+            uint64_t(sent), quicTraceSegmentSize(options.gso));
       });
 }
 
@@ -328,12 +324,11 @@ int FollyQuicAsyncUDPSocket::writemGSO(
   return quicTraceSend(
       [&] { return writemGSOImpl(addrs, bufs, count, options); },
       [&](int sent) {
-        quic_trace::SocketStats stats{.buffers = uint64_t(sent)};
+        quic_trace::SocketStats stats;
         for (int i = 0; i < sent; ++i) {
-          const uint64_t bytes =
-              bufs[i] ? bufs[i]->computeChainDataLength() : 0;
-          stats.datagrams += quicTraceSegments(bytes, options[i].gso);
-          stats.bytes += bytes;
+          stats += quic_trace::SocketStats::buffer(
+              bufs[i] ? bufs[i]->computeChainDataLength() : 0,
+              quicTraceSegmentSize(options[i].gso));
         }
         return stats;
       });
@@ -375,14 +370,13 @@ int FollyQuicAsyncUDPSocket::writemGSO(
         return writemGSOImpl(addrs, iov, numIovecsInBuffer, count, options);
       },
       [&](int sent) {
-        quic_trace::SocketStats stats{.buffers = uint64_t(sent)};
+        quic_trace::SocketStats stats;
         const iovec* message = iov;
         for (int i = 0; i < sent; ++i) {
-          const uint64_t bytes =
-              quicTraceIovecBytes(message, numIovecsInBuffer[i]);
+          stats += quic_trace::SocketStats::buffer(
+              quicTraceIovecBytes(message, numIovecsInBuffer[i]),
+              quicTraceSegmentSize(options[i].gso));
           message += numIovecsInBuffer[i];
-          stats.datagrams += quicTraceSegments(bytes, options[i].gso);
-          stats.bytes += bytes;
         }
         return stats;
       });

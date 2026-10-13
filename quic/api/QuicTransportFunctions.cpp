@@ -137,22 +137,6 @@ using namespace quic;
 
 #if defined(MVFST_MOQ_TRACE)
 /**
- * Read the clock where frame encoding begins, if packet events are enabled.
- *
- * The trace itself starts only once the scheduler built a packet, backdated
- * to this instant, so a build that yields nothing records no lifecycle.
- */
-std::optional<uint64_t> quicTraceEncodeStart() {
-  if (!quic_trace_quic_packet_start_enabled() &&
-      !quic_trace_quic_packet_end_enabled() &&
-      !quic_trace_quic_packet_phase_enabled() &&
-      !quic_trace_quic_stream_frame_enabled()) {
-    return std::nullopt;
-  }
-  return quic_trace::now_ns();
-}
-
-/**
  * Start the trace of a packet the scheduler built, and record its STREAM
  * frames. Returns the packet with its encryption phase open.
  *
@@ -466,7 +450,10 @@ continuousMemoryBuildScheduleEncrypt(
   }
 
 #if defined(MVFST_MOQ_TRACE)
-  const auto quicTraceEncodeStartNs = quicTraceEncodeStart();
+  // Where frame encoding begins. The trace itself starts only once the
+  // scheduler built a packet, backdated to this instant, so a build that
+  // yields nothing records no lifecycle.
+  const auto quicTraceEncodeStartNs = quic_trace::now_ns_if_enabled();
 #endif
   const auto rollbackSize = connection.bufAccessor->length();
   auto rollbackBuf = [&]() {
@@ -662,7 +649,8 @@ iobufChainBasedBuildScheduleEncrypt(
     const PacketNumberCipher& headerCipher,
     TimePoint sendTime) {
 #if defined(MVFST_MOQ_TRACE)
-  const auto quicTraceEncodeStartNs = quicTraceEncodeStart();
+  // Where frame encoding begins, as in continuousMemoryBuildScheduleEncrypt.
+  const auto quicTraceEncodeStartNs = quic_trace::now_ns_if_enabled();
 #endif
   // SCONE: Pre-build SCONE packet and adjust max packet size to avoid overflow
   std::unique_ptr<Buf> preBuildSconePacket;

@@ -51,13 +51,7 @@ class QuicTraceRxPacket {
   QuicTraceRxPacket(
       const QuicServerConnectionState& conn,
       std::optional<uint64_t> readNs) {
-    if (!readNs) {
-      return;
-    }
-    if (!quic_trace_quic_packet_start_enabled() &&
-        !quic_trace_quic_packet_end_enabled() &&
-        !quic_trace_quic_packet_phase_enabled() &&
-        !quic_trace_quic_stream_frame_enabled()) {
+    if (!readNs || !quic_trace::enabled()) {
       return;
     }
     parseStartNs_ = quic_trace::now_ns();
@@ -66,8 +60,11 @@ class QuicTraceRxPacket {
     context.direction = QUIC_TRACE_DIRECTION_RX;
     context.start_ns = *readNs;
     packet_ = quic_trace::Packet(context);
-    packet_.phase_at(QUIC_TRACE_PACKET_PHASE_READ_QUEUE, *readNs)
-        .finish_at(QUIC_TRACE_PACKET_OUTCOME_SUCCESS, *parseStartNs_);
+    packet_.record_phase(
+        QUIC_TRACE_PACKET_PHASE_READ_QUEUE,
+        *readNs,
+        *parseStartNs_,
+        QUIC_TRACE_PACKET_OUTCOME_SUCCESS);
   }
 
   QuicTraceRxPacket(const QuicTraceRxPacket&) = delete;
@@ -118,10 +115,11 @@ class QuicTraceRxPacket {
       if (!nextNs) {
         nextNs = stamps_.decodeStartNs;
       }
-      packet_.phase_at(phase, *startNs)
-          .finish_at(
-              nextNs ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS : outcome,
-              nextNs.value_or(endNs));
+      packet_.record_phase(
+          phase,
+          *startNs,
+          nextNs.value_or(endNs),
+          nextNs ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS : outcome);
     }
     if (regular) {
       packet_.set_number(regular->header.getPacketSequenceNum());
