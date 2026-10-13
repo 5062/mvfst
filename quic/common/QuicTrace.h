@@ -33,6 +33,17 @@ namespace quic {
 inline thread_local std::optional<uint64_t> quicTraceLastSendNs;
 
 /**
+ * The completion of the latest datagram read made on this thread through
+ * folly's read loop.
+ *
+ * The server worker's read dispatcher sets it right after the receive system
+ * call returns, and folly hands that datagram to the worker's onDataAvailable
+ * synchronously, which takes it, so the instant always belongs to the datagram
+ * being handed over.
+ */
+inline thread_local std::optional<uint64_t> quicTraceLastReadNs;
+
+/**
  * Map a packet's protection type to the provider's packet space.
  *
  * A template, so this header needs no codec types: pass quic::ProtectionType.

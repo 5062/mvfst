@@ -12,9 +12,11 @@
 #include <folly/system/ThreadId.h>
 #include <quic/QuicConstants.h>
 #include <quic/common/MvfstLogging.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <utility>
 
 #ifdef FOLLY_HAVE_MSG_ERRQUEUE
 #include <linux/net_tstamp.h>
@@ -35,6 +37,10 @@
 #include <quic/state/ConnectionOopsFields.h>
 #include <quic/state/QuicConnectionStats.h>
 
+#if defined(MVFST_MOQ_TRACE)
+#include <quic/common/QuicTrace.h>
+#endif
+
 // This hook is invoked by mvfst for every UDP socket it creates.
 #if FOLLY_HAVE_WEAK_SYMBOLS
 extern "C" FOLLY_ATTR_WEAK void mvfst_hook_on_socket_create(int fd);
@@ -43,6 +49,74 @@ static void (*mvfst_hook_on_socket_create)(int fd) = nullptr;
 #endif
 
 namespace {
+#if defined(MVFST_MOQ_TRACE)
+/**
+ * Times the receive system calls of folly's read loop on a worker socket.
+ *
+ * With moxygen's traced folly patch, AsyncUDPSocket::handleRead reads each
+ * datagram through the socket's netops dispatcher, then calls the worker's
+ * onDataAvailable synchronously. Each read is recorded as an RX udp_socket
+ * operation, and its completion is left in quicTraceLastReadNs for the
+ * datagram the worker is handed next. Every other call keeps the default
+ * dispatcher's behavior.
+ */
+class QuicTraceReadDispatcher : public folly::netops::Dispatcher {
+ public:
+  ssize_t recvfrom(
+      folly::NetworkSocket s,
+      void* buf,
+      size_t len,
+      int flags,
+      sockaddr* from,
+      socklen_t* fromlen) override {
+    return traced(len, nullptr, [&] {
+      return Dispatcher::recvfrom(s, buf, len, flags, from, fromlen);
+    });
+  }
+
+  ssize_t recvmsg(folly::NetworkSocket s, msghdr* message, int flags)
+      override {
+    size_t capacity = 0;
+    for (size_t i = 0; i < message->msg_iovlen; ++i) {
+      capacity += message->msg_iov[i].iov_len;
+    }
+    return traced(capacity, message, [&] {
+      return Dispatcher::recvmsg(s, message, flags);
+    });
+  }
+
+ private:
+  /**
+   * Run one read, ending its udp_socket operation at the instant it returned.
+   * A buffer filled by GRO counts one datagram per segment.
+   */
+  template <typename Read>
+  static ssize_t traced(size_t capacity, msghdr* message, Read&& read) {
+    quic_trace::Socket socket(QUIC_TRACE_DIRECTION_RX);
+    const ssize_t result = read();
+    const int error = result < 0 ? errno : 0;
+    const uint64_t readNs = quic_trace::now_ns();
+    quic_trace::SocketStats stats;
+    if (result >= 0) {
+      const auto bytes = std::min(static_cast<size_t>(result), capacity);
+      size_t segment = 0;
+      if (message) {
+        folly::AsyncUDPSocket::ReadCallback::OnDataAvailableParams params;
+        folly::AsyncUDPSocket::fromMsg(params, *message);
+        segment = params.gro > 0 ? static_cast<size_t>(params.gro) : 0;
+      }
+      stats.buffers = 1;
+      stats.datagrams = segment > 0 ? (bytes + segment - 1) / segment : 1;
+      stats.bytes = bytes;
+      quic::quicTraceLastReadNs = readNs;
+    }
+    socket.finish_at(quic_trace::socket_outcome(error), stats, readNs);
+    errno = error;
+    return result;
+  }
+};
+#endif
+
 bool isValidConnIdLength(const quic::ConnectionId& connId) {
   return quic::kMinInitialDestinationConnIdLength <= connId.size() &&
       connId.size() <= quic::kMaxConnectionIdSize;
@@ -240,6 +314,14 @@ void QuicServerWorker::start() {
     quicReadCallbackAdapter_ = std::make_unique<QuicReadCallbackAdapter>(this);
     quicSocket_->resumeRead(quicReadCallbackAdapter_.get());
   } else {
+#if defined(MVFST_MOQ_TRACE)
+    // Time folly's reads, unless something else, such as a test, already
+    // intercepts the socket's calls.
+    if (!socket_->getOverrideNetOpsDispatcher()) {
+      socket_->setOverrideNetOpsDispatcher(
+          std::make_shared<QuicTraceReadDispatcher>());
+    }
+#endif
     socket_->resumeRead(this);
   }
   MVVLOG(10) << fmt::format(
@@ -415,6 +497,10 @@ void QuicServerWorker::onDataAvailable(
   // of it immediately so that if we return early,
   // we've flushed it.
   BufPtr data = std::move(readBuffer_);
+#if defined(MVFST_MOQ_TRACE)
+  // The read that returned this datagram, when the read dispatcher timed it.
+  const auto quicTraceReadNs = std::exchange(quicTraceLastReadNs, std::nullopt);
+#endif
 
   Optional<ReceivedUdpPacket::Timings::SocketTimestampExt> maybeSockTsExt;
   if (params.ts.has_value()) {
@@ -441,6 +527,9 @@ void QuicServerWorker::onDataAvailable(
     udpPacket.tosValue = params.tos;
     udpPacket.ttlValue = packetTtl;
     udpPacket.peerAddress = client;
+#if defined(MVFST_MOQ_TRACE)
+    udpPacket.timings.quicTraceReadNs = quicTraceReadNs;
+#endif
     handleNetworkData(udpPacket);
   } else {
     // if we receive a truncated packet
@@ -468,6 +557,9 @@ void QuicServerWorker::onDataAvailable(
         udpPacket.ttlValue = packetTtl;
         udpPacket.timings.maybeSoftwareTs = maybeSockTsExt;
         udpPacket.peerAddress = client;
+#if defined(MVFST_MOQ_TRACE)
+        udpPacket.timings.quicTraceReadNs = quicTraceReadNs;
+#endif
         handleNetworkData(udpPacket);
         break;
       }
@@ -486,6 +578,9 @@ void QuicServerWorker::onDataAvailable(
       udpPacket.ttlValue = packetTtl;
       udpPacket.timings.maybeSoftwareTs = maybeSockTsExt;
       udpPacket.peerAddress = client;
+#if defined(MVFST_MOQ_TRACE)
+      udpPacket.timings.quicTraceReadNs = quicTraceReadNs;
+#endif
       handleNetworkData(udpPacket);
     }
   }

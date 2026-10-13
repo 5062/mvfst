@@ -13,6 +13,7 @@ The branch starts at `f21cfe029`, the mvfst revision that moxygen pins.
 | Call site | Emission |
 | --- | --- |
 | `QuicAsyncUDPSocketImpl::recvmmsgNetworkData` | RX `udp_socket` around the `recvmmsg` call, and the call's completion stamped on every datagram it returned |
+| `QuicServerWorker` read dispatcher | RX `udp_socket` around each `recvmsg` or `recvfrom` of folly's read loop, with GRO datagrams, and the call's completion stamped on the datagram `onDataAvailable` receives |
 | `FollyQuicAsyncUDPSocket::write`, `writeGSO`, `writem`, `writemGSO` | TX `udp_socket` around each `sendmsg` or `sendmmsg`, with buffers, GSO datagrams, and bytes |
 | `onServerReadDataFromOpen` | RX packet from the read's completion: `read_queue`, `header_parse`, `header_unprotect`, `payload_decrypt`, `frame_process`, and its outcome |
 | `QuicReadCodec` | the boundaries of the parse stages, stamped only for a traced packet |
@@ -30,11 +31,16 @@ serves every connection.
 ## Boundaries
 
 - **Read path.** RX packets start at the completion of the receive system call,
-  so only datagrams from mvfst's own `recvmmsg` read are traced. That read path
-  is selected by `TransportSettings::shouldUseWrapperRecvmmsgForBatchRecv`, which
-  the moxygen relay sets with `-recvmmsg`. folly's read callback hides its system
-  call, so a datagram it returns has no read time and its packets get no RX
-  trace.
+  on both of the server worker's read paths. mvfst's own `recvmmsg` read, which
+  `TransportSettings::shouldUseWrapperRecvmmsgForBatchRecv` selects, brackets
+  its call directly. On the default path folly makes the call, so the worker
+  installs a netops dispatcher on its socket that times each `recvmsg` or
+  `recvfrom` and hands the completion to `onDataAvailable` through a
+  thread-local value, since folly calls it synchronously after the read. folly
+  reads through the dispatcher only with the patch moxygen's traced build
+  applies (`moq_trace/folly-read-dispatcher.patch` in the moxygen fork). Without
+  it, or when a socket already has a dispatcher override, folly's reads go
+  untimed and their packets get no RX trace.
 - **Sends.** A send's completion is read right after the system call returns and
   shared with the batch through a thread-local value, so the `udp_socket` event
   and every packet the call carried end at the same instant. mvfst retries no
