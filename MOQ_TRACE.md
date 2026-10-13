@@ -6,7 +6,10 @@ moxygen relay's MoQ objects can be joined to the QUIC packets, STREAM frames, an
 UDP system calls that carried them. It is a measurement fork, not intended for
 upstream submission.
 
-The branch starts at `f21cfe029`, the mvfst revision that moxygen pins.
+## Revision
+
+The branch `moq-trace` starts at `f21cfe029`, the mvfst revision that moxygen
+pins.
 
 ## What the instrumentation emits
 
@@ -78,3 +81,23 @@ macro, and links the facade. The macro changes struct layouts in mvfst headers,
 so a project that compiles other code against those headers, such as proxygen,
 must define it for that code too. moxygen's standalone build does this when
 `MOXYGEN_MOQ_TRACE` is on.
+
+## Verification
+
+mvfst builds here only as a dependency of the traced moxygen relay, so its
+checks run from the [moxygen fork](https://github.com/5062/moxygen/tree/moq-trace):
+
+```sh
+moq_trace/test.sh
+moq_trace/test_trace.sh
+```
+
+`moq_trace/test_trace.sh` runs the traced relay with a date publisher and a text
+subscriber over loopback under LTTng, and checks the relay's events with the
+toolkit's `moq-trace verify`, as the Quinn and Google QUICHE forks check theirs:
+balanced lifecycles and phases, queue phases on their socket boundaries, per-frame
+phases, connection paths, and no abandoned packet. That session fills no window,
+so the check does not exercise the send-blocked intervals. It
+needs LTTng and the `moq-trace` command, which the moq-trace development shell
+provides; from the moq-workspace, `just test-trace` runs it with the other
+stacks' checks.
