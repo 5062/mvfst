@@ -32,6 +32,9 @@ namespace quic {
  */
 inline thread_local std::optional<uint64_t> quicTraceLastSendNs;
 
+/** Bytes accepted by that send, before the batch writer applies error policy. */
+inline thread_local uint64_t quicTraceLastSendBytes{0};
+
 /**
  * The connection whose batch is making a send system call on this thread.
  *

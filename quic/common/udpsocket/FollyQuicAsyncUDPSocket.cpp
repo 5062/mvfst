@@ -194,10 +194,13 @@ auto quicTraceSend(Send&& send, Stats&& stats) {
       QUIC_TRACE_DIRECTION_TX, quicTraceSendConnectionId);
   const auto result = send();
   quicTraceLastSendNs = quicTraceCall.returned();
+  quicTraceLastSendBytes = 0;
   if (result < 0) {
     quicTraceCall.failed(errno);
   } else {
-    quicTraceCall.succeeded(stats(result));
+    const auto accepted = stats(result);
+    quicTraceLastSendBytes = accepted.bytes;
+    quicTraceCall.succeeded(accepted);
   }
   return result;
 }

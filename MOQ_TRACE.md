@@ -50,9 +50,12 @@ made the send.
   shared with the batch through a thread-local value, so the `udp_socket` event
   and every packet the call carried end at the same instant. mvfst retries no
   failed send, would-block included, and recovers the batch as lost, so a failed
-  send ends its packets `dropped`. A partial `sendmmsg` counts only the accepted
-  messages in its socket event, but ends every packet of the batch at the send.
-  The moxygen relay uses GSO, which sends a batch in one buffer.
+  send ends its packets `dropped`. A partial `sendmmsg` ends only the packets
+  in accepted messages successfully, including every segment of an accepted GSO
+  buffer. The unsent suffix ends `dropped` when the flush discards it. Happy
+  Eyeballs can send that suffix on its second socket first; each packet ends at
+  the first socket attempt that accepts it. The moxygen relay uses GSO, which
+  sends a batch in one buffer.
 - **Undecryptable packets.** A packet that arrives before its keys ends `dropped`,
   and when mvfst replays it with the keys it is traced again from its original
   read time.

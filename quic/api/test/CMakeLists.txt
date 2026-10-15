@@ -91,6 +91,24 @@ quic_add_test(TARGET IoBufQuicBatchTest
   mvfst_state_quic_state_machine
 )
 
+# Linker wrapping makes the trace regression independent of an LTTng session.
+if(MVFST_MOQ_TRACE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  quic_add_test(TARGET IoBufQuicBatchTraceTest
+    SOURCES IoBufQuicBatchTraceTest.cpp
+    DEPENDS
+      Folly::folly
+      mvfst_fizz_client_handshake
+      mvfst_api_transport
+      mvfst_state_quic_state_machine
+  )
+  target_link_options(IoBufQuicBatchTraceTest PRIVATE
+    -Wl,--wrap=quic_trace_quic_packet_end_enabled
+    -Wl,--wrap=quic_trace_quic_packet_end
+    -Wl,--wrap=quic_trace_udp_socket_end_enabled
+    -Wl,--wrap=quic_trace_udp_socket_end
+  )
+endif()
+
 quic_add_test(TARGET QuicBatchWriterTest
   SOURCES
   QuicBatchWriterTest.cpp

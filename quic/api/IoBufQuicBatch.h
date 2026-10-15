@@ -84,11 +84,15 @@ class IOBufQuicBatch {
   int lastRetryableErrno_{};
 
 #if defined(MVFST_MOQ_TRACE)
-  // End every packet in the batch at the send that carried it. A packet still
-  // here when the batch is destroyed never reached a send and is abandoned.
-  void quicTraceFinishPending(quic_trace_packet_outcome outcome);
+  // Finish the accepted prefix at each socket attempt. Any remaining packets
+  // are dropped when the flush ends, because mvfst does not retry that suffix.
+  void quicTraceMarkSent();
+  void quicTraceDropUnsent();
 
-  quic_trace::PendingSend quicTracePending_;
+  // Cumulative byte ends include untraced packets, so sampling cannot shift
+  // the accepted prefix. Empty traces need no entry or allocation.
+  std::vector<std::pair<size_t, quic_trace::PendingSend>> quicTracePending_;
+  size_t quicTraceBatchBytes_{0};
   std::optional<uint64_t> quicTraceConnectionId_;
 #endif
 };

@@ -53,7 +53,10 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::write(
 #if defined(MVFST_MOQ_TRACE)
   // Join the batch only after the flush of the previous one, so the packet
   // ends at the send that carries it.
-  quicTracePending_.append(std::move(trace));
+  quicTraceBatchBytes_ += encodedSize;
+  if (!trace.empty()) {
+    quicTracePending_.emplace_back(quicTraceBatchBytes_, std::move(trace));
+  }
 #endif
 
   // try to append the new buffers
@@ -73,6 +76,10 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flush() {
 }
 
 void IOBufQuicBatch::reset() {
+#if defined(MVFST_MOQ_TRACE)
+  quicTracePending_.clear();
+  quicTraceBatchBytes_ = 0;
+#endif
   batchWriter_->reset();
 }
 
@@ -87,16 +94,18 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
 
 #if defined(MVFST_MOQ_TRACE)
   quicTraceSendConnectionId = quicTraceConnectionId_;
+  quicTraceLastSendNs.reset();
+  quicTraceLastSendBytes = 0;
   SCOPE_EXIT {
+    const int socketErrno = errno;
+    quicTraceDropUnsent();
     quicTraceSendConnectionId.reset();
+    errno = socketErrno;
   };
 #endif
   bool written = false;
   Optional<int> firstSocketErrno;
   if (!happyEyeballsState_ || happyEyeballsState_->shouldWriteToFirstSocket) {
-#if defined(MVFST_MOQ_TRACE)
-    quicTraceLastSendNs.reset();
-#endif
     auto consumed = batchWriter_->write(sock_, peerAddress_);
     if (consumed < 0) {
       firstSocketErrno = errno;
@@ -104,11 +113,7 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
     }
     written = (consumed >= 0);
 #if defined(MVFST_MOQ_TRACE)
-    // mvfst retries no failed send, would-block included, and recovers the
-    // batch as lost, so a failed send drops every packet it held.
-    quicTraceFinishPending(
-        written ? QUIC_TRACE_PACKET_OUTCOME_SUCCESS
-                : QUIC_TRACE_PACKET_OUTCOME_DROPPED);
+    quicTraceMarkSent();
     if (firstSocketErrno) {
       errno = *firstSocketErrno;
     }
@@ -134,12 +139,22 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
 
   Optional<int> secondSocketErrno;
   if (happyEyeballsState_ && happyEyeballsState_->shouldWriteToSecondSocket) {
+#if defined(MVFST_MOQ_TRACE)
+    quicTraceLastSendNs.reset();
+    quicTraceLastSendBytes = 0;
+#endif
     auto consumed = batchWriter_->write(
         *happyEyeballsState_->secondSocket,
         happyEyeballsState_->secondPeerAddress);
     if (consumed < 0) {
       secondSocketErrno = errno;
     }
+#if defined(MVFST_MOQ_TRACE)
+    quicTraceMarkSent();
+    if (secondSocketErrno) {
+      errno = *secondSocketErrno;
+    }
+#endif
 
     // written is marked true if either socket write succeeds
     written |= (consumed >= 0);
@@ -208,14 +223,28 @@ quic::Expected<bool, QuicError> IOBufQuicBatch::flushInternal() {
 }
 
 #if defined(MVFST_MOQ_TRACE)
-void IOBufQuicBatch::quicTraceFinishPending(quic_trace_packet_outcome outcome) {
+void IOBufQuicBatch::quicTraceMarkSent() {
+  if (!quicTraceLastSendNs) {
+    return;
+  }
+  for (auto& [endOffset, trace] : quicTracePending_) {
+    if (endOffset > quicTraceLastSendBytes) {
+      break;
+    }
+    trace.sent(*quicTraceLastSendNs);
+  }
+}
+
+void IOBufQuicBatch::quicTraceDropUnsent() {
   if (quicTracePending_.empty()) {
     return;
   }
   // A writer that made no system call leaves no completion; end the packets
   // where the attempt returned.
   const uint64_t sentNs = quicTraceLastSendNs.value_or(quic_trace::now_ns());
-  quicTracePending_.finish_at(outcome, sentNs);
+  for (auto& entry : quicTracePending_) {
+    entry.second.dropped(sentNs);
+  }
 }
 #endif
 } // namespace quic
